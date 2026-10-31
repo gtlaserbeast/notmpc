@@ -132,6 +132,7 @@ impl App<'_> {
 
         // row 0: [state]   title   volume
         let state = match s.state {
+            _ if self.offline.is_some() => "[Offline]",
             State::Play => "[Playing]",
             State::Pause => "[Paused]",
             State::Stop => "[Stopped]",
@@ -396,7 +397,9 @@ impl App<'_> {
         put(p, y, cols.saturating_sub(rw), &right, t.dim);
 
         let max = cols.saturating_sub(rw + 2) as usize;
-        let (msg, style) = if let Some(Prompt::ClearQueue) = self.prompt {
+        let (msg, style) = if let Some(why) = &self.offline {
+            (format!("MPD unreachable, retrying… ({why})"), t.current)
+        } else if let Some(Prompt::ClearQueue) = self.prompt {
             ("Clear the whole queue? (y/N)".to_owned(), t.current)
         } else if let Some(m) = self.current_message() {
             (m.to_owned(), t.text)

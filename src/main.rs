@@ -11,7 +11,7 @@ use std::sync::mpsc::{self, Receiver};
 use std::thread;
 use std::time::Duration;
 
-use anyhow::{Result, bail};
+use anyhow::Result;
 
 use app::App;
 use config::Config;
@@ -20,14 +20,19 @@ use nc::{Nc, key};
 
 /// How often to redraw while playing, so the progress bar moves.
 const TICK: Duration = Duration::from_millis(250);
+/// How often to try reaching MPD again after losing it.
+const RETRY: Duration = Duration::from_secs(1);
 
 enum Event {
     /// Idle subsystems that changed (`player`, `playlist`, ...).
     Changed(Vec<String>),
-    Lost(anyhow::Error),
+    /// MPD went away (stopped or restarted); we keep retrying.
+    Lost(String),
+    Reconnected,
 }
 
-/// Blocks on `idle` in a second connection and reports changes.
+/// Blocks on `idle` in a second connection and reports changes. Survives
+/// MPD restarts: on failure it reports `Lost` and reconnects.
 fn spawn_idle(target: Target) -> Result<Receiver<Event>> {
     let mut conn = Conn::connect(&target)?;
     let (tx, rx) = mpsc::channel();
@@ -35,10 +40,20 @@ fn spawn_idle(target: Target) -> Result<Receiver<Event>> {
         loop {
             let ev = match conn.command("idle player mixer options playlist update") {
                 Ok(pairs) => Event::Changed(pairs.into_iter().map(|(_, v)| v).collect()),
-                Err(e) => Event::Lost(e),
+                Err(e) => {
+                    if tx.send(Event::Lost(format!("{e:#}"))).is_err() {
+                        return;
+                    }
+                    conn = loop {
+                        thread::sleep(RETRY);
+                        if let Ok(c) = Conn::connect(&target) {
+                            break c;
+                        }
+                    };
+                    Event::Reconnected
+                }
             };
-            let lost = matches!(ev, Event::Lost(_));
-            if tx.send(ev).is_err() || lost {
+            if tx.send(ev).is_err() {
                 return;
             }
         }
@@ -63,19 +78,30 @@ fn main() -> Result<()> {
         let timeout = if app.is_playing() { TICK } else { Duration::from_secs(1) };
         match nc.get(timeout)? {
             Some(i) if i.id == key::RESIZE => nc.refresh()?,
-            Some(i) if !app.handle(i)? => return Ok(()),
-            _ => {}
+            // MPD trouble is shown in the footer; it never ends the session.
+            Some(i) => match app.handle(i) {
+                Ok(false) => return Ok(()),
+                Ok(true) => {}
+                Err(e) => app.say(format!("MPD: {e:#}")),
+            },
+            None => {}
         }
 
         let mut changed = Vec::new();
         for ev in events.try_iter() {
             match ev {
                 Event::Changed(c) => changed.extend(c),
-                Event::Lost(e) => bail!("lost MPD idle connection: {e}"),
+                Event::Lost(e) => app.offline = Some(e),
+                Event::Reconnected => {
+                    app.offline = None;
+                    changed.extend(app::ALL_EVENTS.iter().map(|s| s.to_string()));
+                }
             }
         }
-        if !changed.is_empty() {
-            app.update(&changed)?;
+        if !changed.is_empty()
+            && let Err(e) = app.update(&changed)
+        {
+            app.say(format!("MPD: {e:#}"));
         }
     }
 }

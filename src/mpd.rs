@@ -58,7 +58,10 @@ impl Target {
 
 pub type Pairs = Vec<(String, String)>;
 
+/// A connection that transparently reconnects: MPD drops clients after
+/// `connection_timeout` (60s by default) without a command, and restarts.
 pub struct Conn {
+    target: Target,
     reader: BufReader<Box<dyn Read + Send>>,
     writer: Box<dyn Write + Send>,
 }
@@ -76,17 +79,17 @@ impl Conn {
                 (Box::new(s.try_clone()?), Box::new(s))
             }
         };
-        let mut conn = Self { reader: BufReader::new(r), writer: w };
+        let mut conn = Self { target: target.clone(), reader: BufReader::new(r), writer: w };
 
         let greeting = conn.read_line()?;
         if !greeting.starts_with("OK MPD ") {
             bail!("unexpected greeting from MPD: {greeting:?}");
         }
         if let Some(pw) = &target.password {
-            conn.command(&format!("password {}", quote(pw)))?;
+            conn.exchange(&format!("password {}", quote(pw)))?;
         }
         // Older servers reject this; art then just arrives in smaller chunks.
-        let _ = conn.command(&format!("binarylimit {BINARY_LIMIT}"));
+        let _ = conn.exchange(&format!("binarylimit {BINARY_LIMIT}"));
         Ok(conn)
     }
 
@@ -140,7 +143,19 @@ impl Conn {
         }
     }
 
+    /// Sends `cmd`. If the connection turns out to be dead, reconnects and
+    /// retries once: a dropped connection means MPD never ran the command.
     fn request(&mut self, cmd: &str) -> Result<(Pairs, Option<Vec<u8>>)> {
+        match self.exchange(cmd) {
+            Err(e) if !e.is::<Ack>() => {
+                *self = Self::connect(&self.target)?;
+                self.exchange(cmd)
+            }
+            r => r,
+        }
+    }
+
+    fn exchange(&mut self, cmd: &str) -> Result<(Pairs, Option<Vec<u8>>)> {
         writeln!(self.writer, "{cmd}")?;
         self.writer.flush()?;
 

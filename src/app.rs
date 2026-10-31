@@ -15,6 +15,8 @@ use crate::nc::{Input, Nc};
 /// Idle subsystems that mean the queue changed / status may have changed.
 const QUEUE_EVENTS: &[&str] = &["playlist"];
 const STATUS_EVENTS: &[&str] = &["player", "mixer", "options", "playlist", "update"];
+/// Enough to refetch everything.
+pub const ALL_EVENTS: &[&str] = &["playlist", "player"];
 
 /// How long a message stays in the footer.
 const MESSAGE_TTL: Duration = Duration::from_secs(4);
@@ -75,6 +77,8 @@ pub struct App<'nc> {
     pub(crate) marked: HashSet<u32>,
     pub(crate) prompt: Option<Prompt>,
     pub(crate) message: Option<(String, Instant)>,
+    /// Why MPD is unreachable, while it is.
+    pub(crate) offline: Option<String>,
     /// Rows the queue list showed last frame, for paging.
     pub(crate) list_height: usize,
     pub(crate) art: Art<'nc>,
@@ -100,16 +104,17 @@ impl<'nc> App<'nc> {
             marked: HashSet::new(),
             prompt: None,
             message: None,
+            offline: None,
             list_height: 20,
             art: Art::new(nc),
         };
-        app.update(&["playlist", "player"])?;
+        app.update(ALL_EVENTS)?;
         app.sel = app.status.song_pos.unwrap_or(0);
         Ok(app)
     }
 
     pub fn is_playing(&self) -> bool {
-        self.status.state == State::Play
+        self.status.state == State::Play && self.offline.is_none()
     }
 
     /// Refetches whatever the idle subsystems in `changed` affect.
@@ -165,7 +170,7 @@ impl<'nc> App<'nc> {
     /// Elapsed time, advanced locally between fetches while playing.
     pub fn elapsed(&self) -> Duration {
         let e = match self.status.state {
-            State::Play => self.status.elapsed + self.fetched_at.elapsed(),
+            State::Play if self.offline.is_none() => self.status.elapsed + self.fetched_at.elapsed(),
             _ => self.status.elapsed,
         };
         if self.status.duration.is_zero() { e } else { e.min(self.status.duration) }
