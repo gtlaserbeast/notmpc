@@ -148,9 +148,7 @@ pub struct App<'nc> {
     pub(crate) viz: Option<Visualizer>,
     /// Whether the spectrum is drawn (`viz` stays alive once started).
     pub(crate) viz_on: bool,
-    /// The spectrum's plane, and the header's above it (transparent where
-    /// there's no text). Recreated when the width changes; the header's
-    /// must be created after so it stacks on top.
+    /// The spectrum's plane and the header's above it; see `layer_header`.
     pub(crate) header_plane: Option<OwnedPlane<'nc>>,
     pub(crate) viz_plane: Option<OwnedPlane<'nc>>,
 }
@@ -192,7 +190,7 @@ impl<'nc> App<'nc> {
             viz_plane: None,
         };
         if app.cfg.visualizer {
-            app.viz = Some(Visualizer::new(app.cfg.visualizer_fifo.clone(), app.cfg.visualizer_delay));
+            app.viz = Some(Visualizer::new(app.cfg.visualizer_fifo.clone(), app.cfg.visualizer_delay()));
             app.viz_on = true;
         }
         app.update(ALL_EVENTS)?;
@@ -307,7 +305,7 @@ impl<'nc> App<'nc> {
     /// Called every loop iteration.
     pub fn tick(&mut self) -> Result<()> {
         self.scrobble.poll();
-        if self.is_playing() && self.fetched_at.elapsed() >= self.cfg.status_interval {
+        if self.is_playing() && self.fetched_at.elapsed() >= self.cfg.status_interval() {
             self.poll_status()?;
         }
         if self.tab == Tab::Search {
@@ -363,14 +361,12 @@ impl<'nc> App<'nc> {
         let (Some(cur), Some(target)) = (self.queue.pos_of_id(cur_id), self.queue.pos_of_id(target_id)) else {
             return Ok(());
         };
-        if target == cur || Some(target) == self.queue.display_next(cur) {
+        let Some(to) = self.queue.follow_to(cur, target) else {
             return self.restore();
-        }
+        };
         if self.displaced.is_none() {
-            let after = self.queue.display_prev(cur).and_then(|p| self.queue.songs[p].id);
-            self.displaced = Some(Displaced { id: cur_id, after });
+            self.displaced = Some(self.queue.displaced_from(cur));
         }
-        let to = if cur < target { target - 1 } else { target };
         if to != cur {
             self.mpd(&format!("moveid {cur_id} {to}"))?;
         }
@@ -381,14 +377,7 @@ impl<'nc> App<'nc> {
     fn restore(&mut self) -> Result<()> {
         let Some(d) = self.displaced.take() else { return Ok(()) };
         self.fetch_queue()?;
-        let Some(m) = self.queue.pos_of_id(d.id) else { return Ok(()) };
-        let to = match d.after.map(|a| self.queue.pos_of_id(a)) {
-            None => 0,
-            Some(Some(a)) if a < m => a + 1,
-            Some(Some(a)) => a,
-            // Its neighbour is gone; leave it where it is.
-            Some(None) => return Ok(()),
-        };
+        let (Some(m), Some(to)) = (self.queue.pos_of_id(d.id), self.queue.home_of(d)) else { return Ok(()) };
         if to != m {
             self.mpd(&format!("moveid {} {to}", d.id))?;
         }
@@ -602,9 +591,12 @@ impl<'nc> App<'nc> {
         if self.tab == Tab::Search && self.act_search(&action)? {
             return Ok(true);
         }
+        if let Some(by) = action.list_step(self.page()) {
+            self.queue.move_sel(by);
+            return Ok(true);
+        }
         let s = &self.status;
         let step = self.cfg.volume_step;
-        let page = self.list_height.max(2) as isize;
         match action {
             Quit => {
                 // Put the song follow-mode moved back, or the queue stays
@@ -641,12 +633,10 @@ impl<'nc> App<'nc> {
                 // stop drawing; starting another would split the FIFO.
                 self.viz_on = !self.viz_on;
                 if self.viz_on && self.viz.is_none() {
-                    self.viz = Some(Visualizer::new(self.cfg.visualizer_fifo.clone(), self.cfg.visualizer_delay));
+                    self.viz = Some(Visualizer::new(self.cfg.visualizer_fifo.clone(), self.cfg.visualizer_delay()));
                 }
                 let on = self.viz_on;
-                let mut state = crate::config::State::load();
-                state.visualizer = Some(on);
-                let saved = state.save().map_or_else(|e| format!(" (not saved: {e})"), |()| " (saved)".into());
+                let saved = crate::config::State::update(|s| s.visualizer = Some(on));
                 self.say(format!("visualizer {}{saved}", if on { "on" } else { "off" }));
             }
             VisualizerDelayDown | VisualizerDelayUp => {
@@ -657,13 +647,8 @@ impl<'nc> App<'nc> {
                 let ms = viz.delay().as_millis() as i64 + if action == VisualizerDelayUp { 10 } else { -10 };
                 let ms = ms.clamp(0, 2000) as u64;
                 viz.set_delay(Duration::from_millis(ms));
-                let mut state = crate::config::State::load();
-                state.visualizer_delay_ms = Some(ms);
-                let saved = state.save();
-                self.say(match saved {
-                    Ok(()) => format!("visualizer delay {ms} ms (saved)"),
-                    Err(e) => format!("visualizer delay {ms} ms (not saved: {e})"),
-                });
+                let saved = crate::config::State::update(|s| s.visualizer_delay_ms = Some(ms));
+                self.say(format!("visualizer delay {ms} ms{saved}"));
             }
             ToggleFollow => {
                 self.follow = !self.follow;
@@ -694,33 +679,8 @@ impl<'nc> App<'nc> {
                 self.say("rescanning database…");
             }
 
-            Up | Down | UpHalf | DownHalf | PageUp | PageDown => {
-                let by = match action {
-                    Up => -1,
-                    Down => 1,
-                    UpHalf => -page / 2,
-                    DownHalf => page / 2,
-                    PageUp => -page,
-                    _ => page,
-                };
-                self.queue.move_sel(by);
-            }
-            Top | Bottom => {
-                self.queue.sel = if action == Top { 0 } else { self.queue.rows.len().saturating_sub(1) };
-            }
-            Left => match self.queue.selected() {
-                Some(Row::Group(g)) => self.queue.set_collapsed(g, true),
-                Some(Row::Song(q)) if self.queue.grouping => {
-                    let g = self.queue.group_of_song(q);
-                    self.queue.set_collapsed(g, true);
-                }
-                _ => {}
-            },
-            Right => {
-                if let Some(Row::Group(g)) = self.queue.selected() {
-                    self.queue.set_collapsed(g, false);
-                }
-            }
+            Left => self.queue.collapse_selected(),
+            Right => self.queue.expand_selected(),
             CollapseAll => self.queue.set_all_collapsed(true),
             ExpandAll => self.queue.set_all_collapsed(false),
             Confirm | Play => self.play_selected()?,
@@ -737,27 +697,18 @@ impl<'nc> App<'nc> {
                 self.displaced = None;
                 self.mpd("shuffle")?;
             }
-            Select => {
-                let ids: Vec<u32> = self.queue.selected_songs().iter().filter_map(|&q| self.queue.songs[q].id).collect();
-                let all_marked = ids.iter().all(|id| self.queue.marked.contains(id));
-                for id in ids {
-                    if all_marked {
-                        self.queue.marked.remove(&id);
-                    } else {
-                        self.queue.marked.insert(id);
-                    }
-                }
-                self.queue.move_sel(1);
-            }
-            InvertSelection => {
-                let q = &mut self.queue;
-                q.marked = q.songs.iter().filter_map(|s| s.id).filter(|id| !q.marked.contains(id)).collect();
-            }
+            Select => self.queue.toggle_mark_selected(),
+            InvertSelection => self.queue.invert_marks(),
             Close => self.queue.marked.clear(),
             PaneUp | PaneDown | PaneLeft | PaneRight | Unbind => {}
             other => self.say(format!("{other:?} isn't implemented yet")),
         }
         Ok(true)
+    }
+
+    /// Rows a page-up/down moves.
+    fn page(&self) -> isize {
+        self.list_height.max(2) as isize
     }
 
     fn play_selected(&mut self) -> Result<()> {
@@ -812,17 +763,12 @@ impl<'nc> App<'nc> {
     /// (global keys like play/pause fall through).
     fn act_dirs(&mut self, action: &Action) -> Result<bool> {
         use Action::*;
-        let page = self.list_height.max(2) as isize;
+        if let Some(by) = action.list_step(self.page()) {
+            self.browser.move_sel(by);
+            return Ok(true);
+        }
         let b = &mut self.browser;
         match action {
-            Up => b.move_sel(-1),
-            Down => b.move_sel(1),
-            UpHalf => b.move_sel(-page / 2),
-            DownHalf => b.move_sel(page / 2),
-            PageUp => b.move_sel(-page),
-            PageDown => b.move_sel(page),
-            Top => b.set_sel(0),
-            Bottom => b.set_sel(usize::MAX),
             Left => b.up(),
             Right => _ = b.enter(&mut self.conn)?,
             Confirm => {
@@ -846,22 +792,8 @@ impl<'nc> App<'nc> {
                 let all: Vec<String> = b.current().entries.iter().map(|e| e.uri().to_owned()).collect();
                 self.queue_uris(&all, Where::End)?;
             }
-            Select => {
-                if let Some(u) = b.selected().map(|e| e.uri().to_owned())
-                    && !b.marked.remove(&u)
-                {
-                    b.marked.insert(u);
-                }
-                b.move_sel(1);
-            }
-            InvertSelection => {
-                let all: Vec<String> = b.current().entries.iter().map(|e| e.uri().to_owned()).collect();
-                for u in all {
-                    if !b.marked.remove(&u) {
-                        b.marked.insert(u);
-                    }
-                }
-            }
+            Select => b.toggle_mark_selected(),
+            InvertSelection => b.invert_marks(),
             Close => b.marked.clear(),
             // C on Directories: open the playing song's folder.
             JumpToCurrent => {
@@ -889,8 +821,7 @@ impl<'nc> App<'nc> {
         self.restore()?;
         let n = enqueue::enqueue(&mut self.conn, &items, at)?.len();
         self.browser.marked.clear();
-        let verb = if at == Where::Next { "playing next" } else { "queued" };
-        self.say(format!("{verb}: {n} song{}", if n == 1 { "" } else { "s" }));
+        self.say_queued(n, at);
         Ok(())
     }
 
@@ -898,46 +829,19 @@ impl<'nc> App<'nc> {
     /// doesn't handle.
     fn act_search(&mut self, action: &Action) -> Result<bool> {
         use Action::*;
-        let page = self.list_height.max(2) as isize;
+        if let Some(by) = action.list_step(self.page()) {
+            self.search.results.move_sel(by);
+            return Ok(true);
+        }
         let r = &mut self.search.results;
         match action {
-            Up => r.move_sel(-1),
-            Down => r.move_sel(1),
-            UpHalf => r.move_sel(-page / 2),
-            DownHalf => r.move_sel(page / 2),
-            PageUp => r.move_sel(-page),
-            PageDown => r.move_sel(page),
-            Top => r.sel = 0,
-            Bottom => r.sel = r.rows.len().saturating_sub(1),
-            Left => match r.selected() {
-                Some(Row::Group(g)) => r.set_collapsed(g, true),
-                Some(Row::Song(q)) => {
-                    let g = r.group_of_song(q);
-                    r.set_collapsed(g, true);
-                }
-                None => {}
-            },
-            Right => {
-                if let Some(Row::Group(g)) = r.selected() {
-                    r.set_collapsed(g, false);
-                }
-            }
+            Left => r.collapse_selected(),
+            Right => r.expand_selected(),
             FocusInput | EnterSearch => self.search.editing = true,
             Close if r.marked.is_empty() => self.search.editing = true,
             Close => r.marked.clear(),
-            Select => {
-                let ids: Vec<u32> = r.selected_songs().iter().filter_map(|&q| r.songs[q].id).collect();
-                let all = ids.iter().all(|id| r.marked.contains(id));
-                for id in ids {
-                    if all {
-                        r.marked.remove(&id);
-                    } else {
-                        r.marked.insert(id);
-                    }
-                }
-                r.move_sel(1);
-            }
-            InvertSelection => r.marked = r.songs.iter().filter_map(|s| s.id).filter(|id| !r.marked.contains(id)).collect(),
+            Select => r.toggle_mark_selected(),
+            InvertSelection => r.invert_marks(),
             Add => self.queue_results(false, Where::End, false)?,
             AddAll => self.queue_results(true, Where::End, false)?,
             PlayNext => self.queue_results(false, Where::Next, false)?,
@@ -968,10 +872,13 @@ impl<'nc> App<'nc> {
             self.mpd(&format!("playid {id}"))?;
         }
         self.search.results.marked.clear();
-        let n = ids.len();
+        self.say_queued(ids.len(), at);
+        Ok(())
+    }
+
+    fn say_queued(&mut self, n: usize, at: Where) {
         let verb = if at == Where::Next { "playing next" } else { "queued" };
         self.say(format!("{verb}: {n} song{}", if n == 1 { "" } else { "s" }));
-        Ok(())
     }
 
     pub fn click(&mut self, m: Mouse) -> Result<()> {

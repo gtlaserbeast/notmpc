@@ -287,6 +287,34 @@ impl Queue {
         self.display_of[q].checked_sub(1).map(|d| self.order[d])
     }
 
+    /// For following: the MPD position to move the playing song `cur` to
+    /// so that `target` plays right after it. None when `target` already
+    /// comes next in display order (or is the playing song).
+    pub fn follow_to(&self, cur: usize, target: usize) -> Option<usize> {
+        if target == cur || self.display_next(cur) == Some(target) {
+            return None;
+        }
+        Some(if cur < target { target - 1 } else { target })
+    }
+
+    /// Where song `q` lives in display order, to put it back later.
+    pub fn displaced_from(&self, q: usize) -> Displaced {
+        let after = self.display_prev(q).and_then(|p| self.songs[p].id);
+        Displaced { id: self.songs[q].id.unwrap_or_default(), after }
+    }
+
+    /// The MPD position that puts a displaced song back home; None if it's
+    /// gone, or its neighbour is (then it stays where it is).
+    pub fn home_of(&self, d: Displaced) -> Option<usize> {
+        let m = self.pos_of_id(d.id)?;
+        match d.after.map(|a| self.pos_of_id(a)) {
+            None => Some(0),
+            Some(Some(a)) if a < m => Some(a + 1),
+            Some(Some(a)) => Some(a),
+            Some(None) => None,
+        }
+    }
+
     /// Scrolls the view (not the cursor), e.g. for the mouse wheel.
     pub fn scroll_by(&mut self, by: isize, visible: usize) {
         self.scroll = self.scroll.saturating_add_signed(by).min(self.rows.len().saturating_sub(visible));
@@ -311,6 +339,40 @@ impl Queue {
         self.rebuild_rows();
         self.restore_cursor(cursor);
         self.restore_top(top);
+    }
+
+    /// Folds the album under the cursor (on a song, the one it's in).
+    pub fn collapse_selected(&mut self) {
+        match self.selected() {
+            Some(Row::Group(g)) => self.set_collapsed(g, true),
+            Some(Row::Song(q)) if self.grouping => self.set_collapsed(self.group_of_song(q), true),
+            _ => {}
+        }
+    }
+
+    pub fn expand_selected(&mut self) {
+        if let Some(Row::Group(g)) = self.selected() {
+            self.set_collapsed(g, false);
+        }
+    }
+
+    /// Marks the songs under the cursor, or unmarks them if all already
+    /// are, and moves down.
+    pub fn toggle_mark_selected(&mut self) {
+        let ids: Vec<u32> = self.selected_songs().iter().filter_map(|&q| self.songs[q].id).collect();
+        let all = ids.iter().all(|id| self.marked.contains(id));
+        for id in ids {
+            if all {
+                self.marked.remove(&id);
+            } else {
+                self.marked.insert(id);
+            }
+        }
+        self.move_sel(1);
+    }
+
+    pub fn invert_marks(&mut self) {
+        self.marked = self.songs.iter().filter_map(|s| s.id).filter(|id| !self.marked.contains(id)).collect();
     }
 
     pub fn set_all_collapsed(&mut self, collapse: bool) {
@@ -388,6 +450,40 @@ mod tests {
         assert_eq!(q.groups.len(), 3);
         // display order says song 2 follows song 1, even though MPD has 4 next
         assert_eq!(q.display_next(2).map(|i| q.songs[i].id), Some(Some(2)));
+    }
+
+    /// MPD's `moveid`.
+    fn moveid(songs: &mut Vec<Song>, id: u32, to: usize) {
+        let from = songs.iter().position(|s| s.id == Some(id)).unwrap();
+        let s = songs.remove(from);
+        songs.insert(to, s);
+    }
+
+    fn ids(songs: &[Song]) -> Vec<u32> {
+        songs.iter().map(|s| s.id.unwrap()).collect()
+    }
+
+    #[test]
+    fn following_moves_the_playing_song_and_back() {
+        for (cur, target) in [(1, 4), (4, 2), (5, 1), (1, 3)] {
+            let mut mpd: Vec<Song> = (1..=5).map(|i| song(i, "A")).collect();
+            let mut q = Queue::new(true);
+            q.set_songs(mpd.clone(), None);
+            let (c, t) = (q.pos_of_id(cur).unwrap(), q.pos_of_id(target).unwrap());
+            let d = q.displaced_from(c);
+            let Some(to) = q.follow_to(c, t) else {
+                assert_eq!(target, cur + 1, "only a song that's already next needs no move");
+                continue;
+            };
+            moveid(&mut mpd, cur, to);
+            let after = ids(&mpd)[mpd.iter().position(|s| s.id == Some(cur)).unwrap() + 1];
+            assert_eq!(after, target, "{cur}→{target}: MPD plays the target next");
+            q.set_songs(mpd.clone(), Some(d));
+            let shown: Vec<u32> = q.order.iter().map(|&i| q.songs[i].id.unwrap()).collect();
+            assert_eq!(shown, vec![1, 2, 3, 4, 5], "the display keeps the real order");
+            moveid(&mut mpd, cur, q.home_of(d).unwrap());
+            assert_eq!(ids(&mpd), vec![1, 2, 3, 4, 5], "{cur}→{target}: restored");
+        }
     }
 
     #[test]

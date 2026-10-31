@@ -121,24 +121,8 @@ impl App<'_> {
             return Ok(());
         }
 
-        // Header and progress bar on their own transparent plane, above the
-        // spectrum's (see `App::header_plane`). A pixel bar gets a plane of
-        // its own instead: text shouldn't sit over pixel images.
         let pixel_bar = self.pixel_bar.is_some();
-        let hp_rows = if pixel_bar { 2 } else { 3 };
-        if self.header_plane.as_ref().is_none_or(|h| h.dim_yx() != (hp_rows, cols)) {
-            self.header_plane = None;
-            self.viz_plane = None;
-            self.viz_plane = Some(nc.new_plane(0, 0, self.cfg.visualizer_rows.min(3), cols)?);
-            let mut h = nc.new_plane(0, 0, hp_rows, cols)?;
-            h.set_base_transparent();
-            h.move_top();
-            self.header_plane = Some(h);
-            // back on top of the new planes
-            if let Some(bar) = self.pixel_bar.as_mut() {
-                bar.hide();
-            }
-        }
+        self.layer_header(cols)?;
         self.draw_viz(cols);
         let mut hp = self.header_plane.take().expect("created above");
         hp.erase();
@@ -171,6 +155,30 @@ impl App<'_> {
         self.draw_footer(&mut p, rows - 1, cols);
         self.draw_overlay(rows, cols)?;
         reset(&mut p);
+        Ok(())
+    }
+
+    /// (Re)creates the header's planes for this width. Bottom to top: the
+    /// spectrum; the header text on a transparent plane (and the symbol
+    /// progress bar, row 2); the pixel bar on its own, since text shouldn't
+    /// sit over pixel images. notcurses stacks a new plane on top, so they
+    /// are made in that order.
+    fn layer_header(&mut self, cols: u32) -> Result<()> {
+        let hp_rows = if self.pixel_bar.is_some() { 2 } else { 3 };
+        if self.header_plane.as_ref().is_some_and(|h| h.dim_yx() == (hp_rows, cols)) {
+            return Ok(());
+        }
+        self.header_plane = None;
+        self.viz_plane = None;
+        self.viz_plane = Some(self.nc.new_plane(0, 0, self.cfg.visualizer_rows, cols)?);
+        let mut h = self.nc.new_plane(0, 0, hp_rows, cols)?;
+        h.set_base_transparent();
+        h.move_top();
+        self.header_plane = Some(h);
+        // recreated on top at its next draw
+        if let Some(bar) = self.pixel_bar.as_mut() {
+            bar.hide();
+        }
         Ok(())
     }
 

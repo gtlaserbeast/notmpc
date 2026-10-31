@@ -99,6 +99,25 @@ pub enum Action {
     Unbind,
 }
 
+impl Action {
+    /// How far a list movement moves the cursor (`page` rows a page);
+    /// Top and Bottom as far as it goes. None for other actions.
+    pub fn list_step(&self, page: isize) -> Option<isize> {
+        use Action::*;
+        Some(match self {
+            Up => -1,
+            Down => 1,
+            UpHalf => -page / 2,
+            DownHalf => page / 2,
+            PageUp => -page,
+            PageDown => page,
+            Top => -isize::MAX,
+            Bottom => isize::MAX,
+            _ => return None,
+        })
+    }
+}
+
 impl FromStr for Action {
     type Err = anyhow::Error;
 

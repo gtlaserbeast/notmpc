@@ -145,7 +145,15 @@ impl State {
             .unwrap_or_default()
     }
 
-    pub fn save(&self) -> Result<()> {
+    /// Loads the state file, applies `change` and saves it; returns
+    /// " (saved)" or why not, for a status message.
+    pub fn update(change: impl FnOnce(&mut Self)) -> String {
+        let mut state = Self::load();
+        change(&mut state);
+        state.save().map_or_else(|e| format!(" (not saved: {e})"), |()| " (saved)".into())
+    }
+
+    fn save(&self) -> Result<()> {
         let path = Self::path().context("no HOME")?;
         if let Some(dir) = path.parent() {
             fs::create_dir_all(dir)?;
@@ -155,7 +163,9 @@ impl State {
     }
 }
 
-#[derive(Clone, Debug)]
+/// The config file's keys, one to one; anything left out keeps its default.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(default, deny_unknown_fields)]
 pub struct Config {
     pub volume_step: u8,
     pub seek_step: u32,
@@ -165,7 +175,7 @@ pub struct Config {
     /// Playback follows the queue cursor (toggle with ToggleFollow).
     pub follow_cursor: bool,
     /// How often to refresh bitrate and position while playing.
-    pub status_interval: Duration,
+    pub status_update_interval_ms: u64,
     /// The progress bar in pixels when the terminal has pixel graphics;
     /// false for the symbol bar (`progress_symbols`).
     pub pixel_progress: bool,
@@ -177,8 +187,15 @@ pub struct Config {
     pub visualizer_fps: u32,
     /// How far the speakers lag MPD's FIFO (PipeWire buffering). Tuned
     /// live with [ and ], which saves it to the state file.
-    pub visualizer_delay: Duration,
+    pub visualizer_delay_ms: u64,
+    /// `[keys.*]` and `[theme]` as written; merged into `keys` and `theme`.
+    #[serde(rename = "keys")]
+    key_overrides: HashMap<String, HashMap<String, String>>,
+    #[serde(rename = "theme")]
+    theme_overrides: HashMap<String, ThemeEntry>,
+    #[serde(skip)]
     pub keys: Keymap,
+    #[serde(skip)]
     pub theme: Theme,
 }
 
@@ -190,7 +207,7 @@ impl Default for Config {
             art_width: 45,
             group_by_album: true,
             follow_cursor: true,
-            status_interval: Duration::from_millis(1000),
+            status_update_interval_ms: 1000,
             pixel_progress: true,
             visualizer: true,
             visualizer_fifo: env::var_os("XDG_RUNTIME_DIR")
@@ -198,33 +215,16 @@ impl Default for Config {
                 .join("mpd/visualizer.fifo"),
             visualizer_rows: 3,
             visualizer_fps: 30,
-            visualizer_delay: Duration::from_millis(150),
+            visualizer_delay_ms: 150,
+            key_overrides: HashMap::new(),
+            theme_overrides: HashMap::new(),
             keys: Keymap::defaults(),
             theme: Theme::default(),
         }
     }
 }
 
-#[derive(Deserialize, Default)]
-#[serde(default, deny_unknown_fields)]
-struct File {
-    volume_step: Option<u8>,
-    seek_step: Option<u32>,
-    art_width: Option<u32>,
-    group_by_album: Option<bool>,
-    follow_cursor: Option<bool>,
-    status_update_interval_ms: Option<u64>,
-    pixel_progress: Option<bool>,
-    visualizer: Option<bool>,
-    visualizer_fifo: Option<String>,
-    visualizer_rows: Option<u32>,
-    visualizer_fps: Option<u32>,
-    visualizer_delay_ms: Option<u64>,
-    keys: HashMap<String, HashMap<String, String>>,
-    theme: HashMap<String, ThemeEntry>,
-}
-
-#[derive(Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 #[serde(untagged)]
 enum ThemeEntry {
     /// `accent = "#dd6f00"`
@@ -257,7 +257,7 @@ impl Config {
         let mut cfg = Self::load_config()?;
         let state = State::load();
         if let Some(ms) = state.visualizer_delay_ms {
-            cfg.visualizer_delay = Duration::from_millis(ms);
+            cfg.visualizer_delay_ms = ms;
         }
         if let Some(on) = state.visualizer {
             cfg.visualizer = on;
@@ -266,56 +266,34 @@ impl Config {
     }
 
     fn load_config() -> Result<Self> {
-        let mut cfg = Self::default();
         let Some(path) = Self::path().filter(|p| p.exists()) else {
-            return Ok(cfg);
+            return Ok(Self::default());
         };
         let text = fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
-        let file: File = toml::from_str(&text).with_context(|| format!("parsing {}", path.display()))?;
+        Self::parse(&text).with_context(|| path.display().to_string())
+    }
 
-        if let Some(v) = file.volume_step {
-            cfg.volume_step = v;
+    fn parse(text: &str) -> Result<Self> {
+        let mut cfg: Self = toml::from_str(text)?;
+        cfg.art_width = cfg.art_width.min(90);
+        cfg.status_update_interval_ms = cfg.status_update_interval_ms.max(100);
+        cfg.visualizer_rows = cfg.visualizer_rows.clamp(1, 3);
+        cfg.visualizer_fps = cfg.visualizer_fps.clamp(5, 60);
+        for (section, entries) in std::mem::take(&mut cfg.key_overrides) {
+            cfg.keys.merge(&section, &entries)?;
         }
-        if let Some(v) = file.seek_step {
-            cfg.seek_step = v;
-        }
-        if let Some(v) = file.art_width {
-            cfg.art_width = v.min(90);
-        }
-        if let Some(v) = file.group_by_album {
-            cfg.group_by_album = v;
-        }
-        if let Some(v) = file.follow_cursor {
-            cfg.follow_cursor = v;
-        }
-        if let Some(v) = file.status_update_interval_ms {
-            cfg.status_interval = Duration::from_millis(v.max(100));
-        }
-        if let Some(v) = file.visualizer {
-            cfg.visualizer = v;
-        }
-        if let Some(v) = file.pixel_progress {
-            cfg.pixel_progress = v;
-        }
-        if let Some(v) = file.visualizer_fifo {
-            cfg.visualizer_fifo = PathBuf::from(v);
-        }
-        if let Some(v) = file.visualizer_rows {
-            cfg.visualizer_rows = v.clamp(1, 3);
-        }
-        if let Some(v) = file.visualizer_fps {
-            cfg.visualizer_fps = v.clamp(5, 60);
-        }
-        if let Some(v) = file.visualizer_delay_ms {
-            cfg.visualizer_delay = Duration::from_millis(v);
-        }
-        for (section, entries) in &file.keys {
-            cfg.keys.merge(section, entries).with_context(|| path.display().to_string())?;
-        }
-        for (name, entry) in file.theme {
-            cfg.theme.set(&name, entry).with_context(|| format!("{}: [theme] {name}", path.display()))?;
+        for (name, entry) in std::mem::take(&mut cfg.theme_overrides) {
+            cfg.theme.set(&name, entry).with_context(|| format!("[theme] {name}"))?;
         }
         Ok(cfg)
+    }
+
+    pub fn status_interval(&self) -> Duration {
+        Duration::from_millis(self.status_update_interval_ms)
+    }
+
+    pub fn visualizer_delay(&self) -> Duration {
+        Duration::from_millis(self.visualizer_delay_ms)
     }
 }
 
@@ -457,22 +435,25 @@ mod tests {
 
     #[test]
     fn parses_a_config_file() {
-        let file: File = toml::from_str(
+        let cfg = Config::parse(
             r##"
             volume_step = 2
+            visualizer_rows = 9
             [keys.global]
             "<C-p>" = "TogglePause"
             "s" = "None"
             [theme]
-            accent_unused_is_rejected_later = "#000000"
             cursor = { fg = "black", bg = "#112233", bold = true }
             progress_symbols = ["[", "=", ">", "-", "]"]
             "##,
         )
         .unwrap();
-        assert_eq!(file.volume_step, Some(2));
-        let mut theme = Theme::default();
-        assert!(theme.set("cursor", file.theme.into_iter().find(|(k, _)| k == "cursor").unwrap().1).is_ok());
-        assert_eq!(theme.cursor.bg, Color::Rgb(0x112233));
+        assert_eq!(cfg.volume_step, 2);
+        assert_eq!(cfg.seek_step, 5, "unset keys keep their defaults");
+        assert_eq!(cfg.visualizer_rows, 3, "clamped");
+        assert_eq!(cfg.theme.cursor.bg, Color::Rgb(0x112233));
+        assert_eq!(cfg.theme.progress_symbols[0], "[");
+        assert!(cfg.keys.global.len() > 20, "skipped fields come from Config::default");
+        assert!(Config::parse("no_such_key = 1").is_err());
     }
 }

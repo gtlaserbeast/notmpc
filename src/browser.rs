@@ -156,6 +156,21 @@ impl Browser {
         self.touch();
     }
 
+    /// Marks or unmarks the entry under the cursor, and moves down.
+    pub fn toggle_mark_selected(&mut self) {
+        if let Some(u) = self.selected().map(|e| e.uri().to_owned()) {
+            toggle(&mut self.marked, u);
+        }
+        self.move_sel(1);
+    }
+
+    pub fn invert_marks(&mut self) {
+        let all: Vec<String> = self.current().entries.iter().map(|e| e.uri().to_owned()).collect();
+        for u in all {
+            toggle(&mut self.marked, u);
+        }
+    }
+
     /// Opens the folder under the cursor. Returns false on a song.
     pub fn enter(&mut self, conn: &mut Conn) -> Result<bool> {
         let Some(Entry::Dir(uri)) = self.selected().cloned() else { return Ok(false) };
@@ -259,5 +274,11 @@ impl Browser {
             return v;
         }
         self.selected().map(|e| vec![e.uri().to_owned()]).unwrap_or_default()
+    }
+}
+
+fn toggle(set: &mut HashSet<String>, u: String) {
+    if !set.remove(&u) {
+        set.insert(u);
     }
 }
