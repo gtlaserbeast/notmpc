@@ -36,6 +36,8 @@ pub mod key {
     pub const HOME: u32 = BASE + 11;
     pub const END: u32 = BASE + 12;
     pub const ENTER: u32 = BASE + 121;
+    pub const BUTTON1: u32 = BASE + 201;
+    pub const BUTTON11: u32 = BASE + 211;
     pub const ESC: u32 = super::sys::NCKEY_ESC;
     pub const TAB: u32 = super::sys::NCKEY_TAB;
     pub const SPACE: u32 = super::sys::NCKEY_SPACE;
@@ -56,6 +58,22 @@ pub enum Color {
 }
 
 pub use sys::{NCSTYLE_BOLD as BOLD, NCSTYLE_ITALIC as ITALIC};
+
+/// What [`Nc::get`] delivers.
+#[derive(Clone, Copy, Debug)]
+pub enum Event {
+    Key(Input),
+    Mouse(Mouse),
+}
+
+/// A mouse button press at a cell. Buttons: 1 left, 2 middle, 3 right,
+/// 4/5 wheel up/down.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Mouse {
+    pub button: u32,
+    pub y: u32,
+    pub x: u32,
+}
 
 /// A key press (releases are filtered out by [`Nc::get`]).
 ///
@@ -133,6 +151,12 @@ impl Nc {
         Ok(OwnedPlane(Plane { raw, _nc: PhantomData }))
     }
 
+    /// Reports button presses and the wheel as [`Event::Mouse`].
+    pub fn enable_mouse(&self) {
+        // SAFETY: raw is a live notcurses context. Failure just means no mouse.
+        unsafe { sys::notcurses_mice_enable(self.raw, sys::NCMICE_BUTTON_EVENT) };
+    }
+
     /// Whether the terminal supports pixel graphics (kitty, sixel, ...).
     pub fn can_pixel(&self) -> bool {
         // SAFETY: raw is a live notcurses context.
@@ -177,8 +201,8 @@ impl Nc {
         Ok(())
     }
 
-    /// Waits up to `timeout` for a key press.
-    pub fn get(&self, timeout: Duration) -> Result<Option<Input>> {
+    /// Waits up to `timeout` for a key press or mouse click.
+    pub fn get(&self, timeout: Duration) -> Result<Option<Event>> {
         // notcurses wants an absolute CLOCK_MONOTONIC deadline, not a duration.
         let mut now = libc::timespec { tv_sec: 0, tv_nsec: 0 };
         // SAFETY: now is a valid out-param.
@@ -196,7 +220,12 @@ impl Nc {
             u32::MAX => bail!("notcurses_get failed"),
             // Terminals speaking the kitty keyboard protocol report releases too.
             _ if ni.evtype == sys::ncintype_e_NCTYPE_RELEASE => Ok(None),
-            _ => Ok(Some(
+            key::BUTTON1..=key::BUTTON11 => Ok((ni.y >= 0 && ni.x >= 0).then_some(Event::Mouse(Mouse {
+                button: id - key::BUTTON1 + 1,
+                y: ni.y as u32,
+                x: ni.x as u32,
+            }))),
+            _ => Ok(Some(Event::Key(
                 Input {
                     id,
                     ctrl: ni.modifiers & sys::NCKEY_MOD_CTRL != 0,
@@ -204,7 +233,7 @@ impl Nc {
                     shift: ni.modifiers & sys::NCKEY_MOD_SHIFT != 0,
                 }
                 .normalize(),
-            )),
+            ))),
         }
     }
 }

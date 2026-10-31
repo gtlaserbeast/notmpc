@@ -46,6 +46,10 @@ Defaults, as in rmpc:
 | X                       | shuffle                                   |
 | Esc                     | clear marks                               |
 
+Mouse: click a tab, a queue row (double-click plays), a mode word in the
+header (toggles it), or the progress bar (seeks there); the wheel scrolls
+the queue, or changes volume over the volume ramp.
+
 Untagged files show artist, album, year, and title guessed from the path,
 in italics.
 
@@ -67,8 +71,7 @@ in italics.
 
 ## Roadmap
 
-1. Mouse
-2. Directories tab, plus `notmpc add` / `notmpc insert` for yazi
-3. Spectrum visualizer behind the header, from MPD's FIFO output
-4. Search tab
-5. Waveform seek bar
+1. Directories tab, plus `notmpc add` / `notmpc insert` for yazi
+2. Spectrum visualizer behind the header, from MPD's FIFO output
+3. Search tab
+4. Waveform seek bar

@@ -1,5 +1,6 @@
 //! App state and what each action does. Drawing lives in `ui.rs`.
 
+use std::cell::RefCell;
 use std::collections::HashSet;
 use std::time::{Duration, Instant};
 
@@ -10,7 +11,7 @@ use crate::config::Config;
 use crate::keys::Action;
 use crate::meta::Meta;
 use crate::mpd::{Ack, Conn, Song, State, Status};
-use crate::nc::{Input, Nc};
+use crate::nc::{Input, Mouse, Nc};
 
 /// Idle subsystems that mean the queue changed / status may have changed.
 const QUEUE_EVENTS: &[&str] = &["playlist"];
@@ -51,6 +52,39 @@ pub struct Group {
     pub various: bool,
 }
 
+/// Two clicks on the same row within this count as a double-click.
+const DOUBLE_CLICK: Duration = Duration::from_millis(400);
+/// Rows the mouse wheel moves the queue cursor.
+const WHEEL_ROWS: isize = 3;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Mode {
+    Repeat,
+    Random,
+    Consume,
+    Single,
+}
+
+/// What's under a clickable region.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Target {
+    Tab(Tab),
+    /// The progress bar's track, starting at `Hit::x`.
+    Progress,
+    Mode(Mode),
+    Volume,
+    Row(Row),
+}
+
+/// A clickable region recorded while drawing: `w` cells from (y, x).
+#[derive(Clone, Copy, Debug)]
+pub struct Hit {
+    pub y: u32,
+    pub x: u32,
+    pub w: u32,
+    pub target: Target,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Prompt {
     ClearQueue,
@@ -81,6 +115,10 @@ pub struct App<'nc> {
     pub(crate) offline: Option<String>,
     /// Rows the queue list showed last frame, for paging.
     pub(crate) list_height: usize,
+    /// Clickable regions from the last frame (drawing only has `&self` in
+    /// places, hence the RefCell).
+    pub(crate) hits: RefCell<Vec<Hit>>,
+    last_click: Option<(Instant, Row)>,
     pub(crate) art: Art<'nc>,
 }
 
@@ -106,6 +144,8 @@ impl<'nc> App<'nc> {
             message: None,
             offline: None,
             list_height: 20,
+            hits: RefCell::new(Vec::new()),
+            last_click: None,
             art: Art::new(nc),
         };
         app.update(ALL_EVENTS)?;
@@ -295,6 +335,53 @@ impl<'nc> App<'nc> {
             other => self.say(format!("{other:?} isn't implemented yet")),
         }
         Ok(true)
+    }
+
+    pub fn click(&mut self, m: Mouse) -> Result<()> {
+        self.prompt = None;
+        let hit = self.hits.borrow().iter().find(|h| h.y == m.y && (h.x..h.x + h.w).contains(&m.x)).copied();
+        let (wheel_up, wheel_down) = (m.button == 4, m.button == 5);
+        match hit.map(|h| (h, h.target)) {
+            Some((_, Target::Volume)) if wheel_up => _ = self.act(Action::VolumeUp)?,
+            Some((_, Target::Volume)) if wheel_down => _ = self.act(Action::VolumeDown)?,
+            _ if (wheel_up || wheel_down) && self.tab == Tab::Queue => {
+                self.move_sel(if wheel_up { -WHEEL_ROWS } else { WHEEL_ROWS });
+            }
+            _ if m.button != 1 => {}
+            Some((_, Target::Tab(t))) => self.tab = t,
+            Some((h, Target::Progress)) => {
+                let d = self.status.duration.as_secs_f64();
+                if d > 0.0 && h.w > 0 {
+                    let frac = f64::from(m.x - h.x) / f64::from(h.w);
+                    self.mpd(&format!("seekcur {:.1}", d * frac))?;
+                }
+            }
+            Some((_, Target::Mode(mode))) => {
+                let a = match mode {
+                    Mode::Repeat => Action::ToggleRepeat,
+                    Mode::Random => Action::ToggleRandom,
+                    Mode::Consume => Action::ToggleConsume,
+                    Mode::Single => Action::ToggleSingle,
+                };
+                self.act(a)?;
+            }
+            Some((_, Target::Row(row))) => {
+                let i = match row {
+                    Row::Song(i) => i,
+                    Row::Group(g) => self.groups[g].first,
+                };
+                let double = self.last_click.is_some_and(|(at, r)| r == row && at.elapsed() < DOUBLE_CLICK);
+                self.sel = i;
+                if double {
+                    self.last_click = None;
+                    self.act(Action::Play)?;
+                } else {
+                    self.last_click = Some((Instant::now(), row));
+                }
+            }
+            _ => {}
+        }
+        Ok(())
     }
 
     fn move_sel(&mut self, by: isize) {

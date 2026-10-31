@@ -14,7 +14,7 @@ use std::time::Duration;
 
 use anyhow::Result;
 
-use crate::app::{App, Prompt, Row, TABS, Tab};
+use crate::app::{App, Hit, Mode, Prompt, Row, TABS, Tab, Target};
 use crate::art::Rect;
 use crate::config::Style;
 use crate::mpd::State;
@@ -101,6 +101,7 @@ impl App<'_> {
         let nc = self.nc;
         let mut p = nc.stdplane();
         p.erase();
+        self.hits.borrow_mut().clear();
         let (rows, cols) = p.dim_yx();
         if rows < HEADER_ROWS + FOOTER_ROWS + 3 || cols < 40 {
             self.art.show(None)?;
@@ -124,6 +125,10 @@ impl App<'_> {
         self.draw_footer(&mut p, rows - 1, cols);
         reset(&mut p);
         Ok(())
+    }
+
+    fn hit(&self, y: u32, x: u32, w: u32, target: Target) {
+        self.hits.borrow_mut().push(Hit { y, x, w, target });
     }
 
     fn draw_header(&self, p: &mut Plane, cols: u32) {
@@ -161,6 +166,8 @@ impl App<'_> {
             None => vec![("No Song".into(), t.title)],
         };
         draw_three(p, 0, cols, &left0, &center0, &right0);
+        let rw = segs_width(&right0);
+        self.hit(0, cols.saturating_sub(rw), rw, Target::Volume);
 
         // row 1: time (bitrate, format)   artist - album   modes
         let mut info = format!("{} / {}", fmt_time(self.elapsed()), fmt_time(s.duration));
@@ -193,18 +200,26 @@ impl App<'_> {
             None => Vec::new(),
         };
 
-        let sep = (" / ".to_owned(), t.mode_on);
-        let mode = |name: &str, on: bool| (name.to_owned(), if on { t.mode_on } else { t.mode_off });
-        let right1 = vec![
-            mode("Repeat", s.repeat),
-            sep.clone(),
-            mode("Random", s.random),
-            sep.clone(),
-            mode("Consume", s.consume),
-            sep,
-            mode("Single", s.single),
+        let modes = [
+            ("Repeat", s.repeat, Mode::Repeat),
+            ("Random", s.random, Mode::Random),
+            ("Consume", s.consume, Mode::Consume),
+            ("Single", s.single, Mode::Single),
         ];
+        let mut right1: Segs = Vec::new();
+        for (i, (name, on, _)) in modes.iter().enumerate() {
+            if i > 0 {
+                right1.push((" / ".into(), t.mode_on));
+            }
+            right1.push((name.to_string(), if *on { t.mode_on } else { t.mode_off }));
+        }
         draw_three(p, 1, cols, &left1, &center1, &right1);
+        let mut x = cols.saturating_sub(segs_width(&right1));
+        for (name, _, mode) in modes {
+            let w = nc::width(name) as u32;
+            self.hit(1, x, w, Target::Mode(mode));
+            x += w + 3;
+        }
     }
 
     /// `[start][elapsed…][thumb][remaining…][end]` across the full width.
@@ -221,6 +236,7 @@ impl App<'_> {
         };
         let filled = ((inner.saturating_sub(wt)) as f64 * frac).round() as u32;
 
+        self.hit(y, ws, inner, Target::Progress);
         let mut x = put(p, y, 0, start, t.progress_elapsed);
         let repeat = |sym: &str, cells: u32| {
             let w = nc::width(sym).max(1) as u32;
@@ -243,7 +259,9 @@ impl App<'_> {
         let mut x = cols.saturating_sub(total) / 2;
         for ((tab, _), label) in TABS.iter().zip(&labels) {
             let st = if *tab == self.tab { t.tab_active } else { t.tab_inactive };
-            x = put(p, y, x, label, st) + GAP;
+            let end = put(p, y, x, label, st);
+            self.hit(y, x, end - x, Target::Tab(*tab));
+            x = end + GAP;
         }
     }
 
@@ -292,6 +310,7 @@ impl App<'_> {
         let w = area.cols;
         for (line, row) in self.rows.iter().enumerate().skip(self.scroll).take(h) {
             let y = area.y + (line - self.scroll) as u32;
+            self.hit(y, area.x, area.cols, Target::Row(*row));
             match *row {
                 Row::Group(g) => self.draw_group_header(p, y, area.x, w, g, &t),
                 Row::Song(i) => self.draw_song_row(p, y, area.x, w, i, &t),
