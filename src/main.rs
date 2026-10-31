@@ -18,6 +18,7 @@ mod search;
 mod ui;
 mod viz;
 
+use std::process::ExitCode;
 use std::sync::mpsc::{self, Receiver};
 use std::thread;
 use std::time::Duration;
@@ -73,13 +74,10 @@ fn spawn_idle(target: Target) -> Result<Receiver<MpdEvent>> {
     Ok(rx)
 }
 
-fn main() -> Result<()> {
+fn main() -> Result<ExitCode> {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    match args.first().map(String::as_str) {
-        Some("add") => return cli::run(enqueue::Where::End, &args[1..]),
-        Some("insert") => return cli::run(enqueue::Where::Next, &args[1..]),
-        Some(other) => anyhow::bail!("unknown command {other:?}; try: notmpc [add|insert PATH...]"),
-        None => {}
+    if let Some(done) = cli::dispatch(&args) {
+        return done;
     }
 
     // Load config and connect before taking over the terminal so errors
@@ -121,7 +119,7 @@ fn main() -> Result<()> {
         match input {
             // MPD trouble is shown in the footer; it never ends the session.
             Some(Event::Key(i)) => match app.handle(i) {
-                Ok(false) => return Ok(()),
+                Ok(false) => return Ok(ExitCode::SUCCESS),
                 Ok(true) => {}
                 Err(e) => app.say(format!("MPD: {e:#}")),
             },

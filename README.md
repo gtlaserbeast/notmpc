@@ -118,6 +118,19 @@ sent, and nothing is when paused. kitty's share is mostly repainting, so
 `visualizer_fps` is the knob; with the visualizer off, notmpc and kitty
 together use about 0.25%.
 
+## Command line
+
+    notmpc update [DIR] [--wait]   # scan for new / changed files (DIR: one folder)
+    notmpc rescan [DIR] [--wait]   # same, re-reading unchanged files too
+    notmpc albumart [FILE|-]       # save the playing song's cover
+    notmpc config                  # print an example config with every setting
+    notmpc --help / --version
+
+`--wait` blocks until MPD has finished the scan. `albumart` writes the
+embedded picture, or the folder's `cover.*`, as is (usually JPEG or PNG);
+it exits 2 when there's no cover and 3 when nothing is playing. For
+playback control, volume and the rest, `mpc` already does the job.
+
 ## Queueing from a file manager
 
     notmpc add PATH...      # append files / directory trees
