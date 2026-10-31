@@ -133,7 +133,7 @@ is on 3 since the Artists/Albums/Playlists tabs don't exist. notmpc adds `t`
 | z x c v                      | repeat / random / consume / single         |
 | F                            | playback follows cursor (see below)        |
 | C-u / C-U                    | update / rescan (C-u is half-page in lists) |
-| ?, oI, oo, op                | help, song info, outputs, decoders (TODO)  |
+| ?, oI, oi, oo, op            | help, playing / selected song info, outputs, decoders |
 | q                            | quit                                       |
 | j / k, ↓ / ↑                 | move                                       |
 | C-d / C-u, C-f / C-b         | half page / page                           |
@@ -148,6 +148,12 @@ is on 3 since the Artists/Albums/Playlists tabs don't exist. notmpc adds `t`
 | C                            | jump to current song                       |
 | X                            | shuffle                                    |
 | Esc                          | clear marks                                |
+
+**Panels** (`?` keys, `oI` / `oi` song info, `oo` outputs, `op` decoders)
+open over a dimmed screen: j/k scroll, Enter or a click toggles an output,
+Esc, q or a click outside closes. Song info lists every tag MPD has plus
+extra tags from the file (ReplayGain, comments...). Covers hide while a
+panel is open (pixel graphics can't sit under text).
 
 **Playback follows the highlight** (foobar2000-style; `F` toggles). The
 queue has two cursors:
@@ -192,13 +198,12 @@ in italics.
 
 ## Roadmap
 
-1. Overlays: help (`?`), song info (`oI`), outputs (`oo`), decoders (`op`)
-2. Scrobble badge in the header from mpdscribble: dim when it isn't
+1. Scrobble badge in the header from mpdscribble: dim when it isn't
    subscribed to MPD's `mpdscribble` channel, ✓ once the current track
    scrobbled, a warning with the journal's backlog count; plus a love key
    (`sendmessage mpdscribble love`). Per-track status needs mpdscribble to
    log to a file notmpc can read.
-3. A collapse-all / expand-all button on the queue (the keys are `H` / `L`)
-4. Waveform seek bar: the track's loudness envelope as a 2-row pixel strip,
+2. A collapse-all / expand-all button on the queue (the keys are `H` / `L`)
+3. Waveform seek bar: the track's loudness envelope as a 2-row pixel strip,
    played part in an orange gradient (tinted from the cover), with a 2-row
    pixel-art rider bobbing along the contour: an Omnium Cargo bike

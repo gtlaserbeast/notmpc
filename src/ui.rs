@@ -154,6 +154,7 @@ impl App<'_> {
             }
         }
         self.draw_footer(&mut p, rows - 1, cols);
+        self.draw_overlay(rows, cols)?;
         reset(&mut p);
         Ok(())
     }
@@ -345,7 +346,7 @@ impl App<'_> {
         let art_cols = if body.cols >= MIN_ART_COLS { body.cols * self.cfg.art_width / 100 } else { 0 };
         if art_cols > 0 {
             let art = Rect { y: body.y, x: 0, rows: body.rows, cols: art_cols };
-            if self.art.has_image() {
+            if self.art.has_image() && self.overlay.is_none() {
                 self.art.show(Some(art))?;
             } else {
                 self.art.show(None)?;
@@ -357,6 +358,82 @@ impl App<'_> {
         }
         let x = if art_cols > 0 { art_cols + 1 } else { 0 };
         self.draw_song_list(p, Rect { y: body.y, x, rows: body.rows, cols: body.cols - x }, List::Queue);
+        Ok(())
+    }
+
+    /// A centred panel over a dimmed screen. Covers are hidden meanwhile:
+    /// notcurses can't draw text over pixel graphics.
+    fn draw_overlay(&mut self, rows: u32, cols: u32) -> Result<()> {
+        let Some(o) = &self.overlay else {
+            self.overlay_plane = None;
+            return Ok(());
+        };
+        let t = self.cfg.theme.clone();
+        if self.overlay_plane.as_ref().is_none_or(|pl| pl.dim_yx() != (rows, cols)) {
+            self.overlay_plane = None;
+            let mut pl = self.nc.new_plane(0, 0, rows, cols)?;
+            pl.set_base_blend(0x000000);
+            pl.move_top();
+            self.overlay_plane = Some(pl);
+        }
+        let mut pl = self.overlay_plane.take().expect("created above");
+        pl.erase();
+
+        let label_w = o.lines.iter().filter(|l| !l.heading).map(|l| nc::width(&l.label)).max().unwrap_or(0).min(28) as u32;
+        let content_w = o.lines.iter().map(|l| nc::width(&l.label).min(28) + 2 + nc::width(&l.value)).max().unwrap_or(20) as u32;
+        let w = (content_w + 6).clamp(40, cols.saturating_sub(4).min(110));
+        let body_h = (o.lines.len() as u32).min(rows.saturating_sub(8));
+        let h = body_h + 4;
+        let (y0, x0) = ((rows.saturating_sub(h)) / 2, (cols.saturating_sub(w)) / 2);
+        self.hit(y0, x0, w, Target::OverlayPanel);
+        for y in y0 + 1..y0 + h {
+            self.hit(y, x0, w, Target::OverlayPanel);
+        }
+
+        // frame
+        let inner = w - 2;
+        let title = nc::fit(&format!(" {} ", o.title), inner.saturating_sub(4) as usize);
+        let top = format!("╭─{title}{}╮", "─".repeat((inner - 1).saturating_sub(nc::width(&title) as u32) as usize));
+        put(&mut pl, y0, x0, &top, t.panel_border);
+        let total = o.lines.len();
+        let more = if total > body_h as usize {
+            format!(" {}–{} of {total} ", o.scroll + 1, (o.scroll + body_h as usize).min(total))
+        } else {
+            String::new()
+        };
+        let hint = if o.selectable() { " Enter toggle · Esc close " } else { " j/k scroll · Esc close " };
+        let fill = (inner as usize).saturating_sub(nc::width(&more) + nc::width(hint) + 1);
+        put(&mut pl, y0 + h - 1, x0, &format!("╰{more}{}{hint}─╯", "─".repeat(fill)), t.panel_border);
+        for y in y0 + 1..y0 + h - 1 {
+            put(&mut pl, y, x0, "│", t.panel_border);
+            put(&mut pl, y, x0 + 1, &" ".repeat(inner as usize), t.panel);
+            put(&mut pl, y, x0 + w - 1, "│", t.panel_border);
+        }
+
+        // lines
+        let on = |s: Style| Style { bg: t.panel.bg, ..s };
+        for (row, (i, line)) in o.lines.iter().enumerate().skip(o.scroll).take(body_h as usize).enumerate() {
+            let y = y0 + 2 + row as u32;
+            let x = x0 + 2;
+            let room = inner.saturating_sub(3) as usize;
+            if o.selectable() {
+                self.hit(y, x0 + 1, inner, Target::OverlayLine(i));
+            }
+            let selected = o.selectable() && i == o.sel;
+            if selected {
+                put(&mut pl, y, x0 + 1, &" ".repeat(inner as usize), t.cursor);
+            }
+            let st = |s: Style| if selected { t.cursor } else { on(s) };
+            if line.heading {
+                put(&mut pl, y, x, &nc::fit(&line.label, room), st(t.group_header));
+                continue;
+            }
+            put(&mut pl, y, x, &nc::fit(&line.label, label_w as usize), st(t.label));
+            let vx = x + label_w + 2;
+            put(&mut pl, y, vx, &nc::fit(&line.value, room.saturating_sub((label_w + 2) as usize)), st(t.text));
+        }
+        reset(&mut pl);
+        self.overlay_plane = Some(pl);
         Ok(())
     }
 
@@ -752,7 +829,7 @@ impl App<'_> {
             return Ok(());
         };
         let mut y = area.y;
-        if self.preview_art.has_image() && area.cols >= 12 {
+        if self.preview_art.has_image() && area.cols >= 12 && self.overlay.is_none() {
             let rows = (area.rows / 2).min(area.cols / 2).max(1);
             let cols = (rows * 2).min(area.cols);
             let r = Rect { y, x: area.x + (area.cols - cols) / 2, rows, cols };

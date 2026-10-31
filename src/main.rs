@@ -8,6 +8,7 @@ mod keys;
 mod meta;
 mod mpd;
 mod nc;
+mod overlay;
 mod queue;
 mod search;
 mod ui;

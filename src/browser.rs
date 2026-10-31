@@ -235,7 +235,7 @@ impl Browser {
         let Some(song) = cover_song else { return Ok(Some((String::new(), None))) };
         let key = song.rsplit_once('/').map_or("", |(d, _)| d).to_owned();
         if !self.covers.contains_key(&key) {
-            let v = art::fetch(conn, &song)?.map(Rc::new);
+            let v = art::fetch(conn, &song, art::PREVIEW_MAX_PX)?.map(Rc::new);
             self.covers.insert(key.clone(), v);
             self.cover_order.push_back(key.clone());
             if self.cover_order.len() > ART_CACHE

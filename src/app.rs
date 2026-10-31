@@ -15,6 +15,7 @@ use crate::keys::{Action, Ctx, Lookup};
 use crate::meta::Meta;
 use crate::mpd::{Ack, Conn, Song, State, Status};
 use crate::nc::{Input, Mouse, Nc, OwnedPlane};
+use crate::overlay::Overlay;
 use crate::search::{Edit, Search};
 use crate::viz::Visualizer;
 use crate::queue::{Displaced, Queue, Row};
@@ -75,6 +76,9 @@ pub enum Target {
     Caret(List, usize),
     /// The Search tab's query line.
     SearchInput,
+    /// An overlay panel, and one of its lines.
+    OverlayPanel,
+    OverlayLine(usize),
     /// A Directories entry: column (0 parent, 1 current, 2 preview), index.
     Entry(u8, usize),
 }
@@ -129,6 +133,8 @@ pub struct App<'nc> {
     pub(crate) browser: Browser,
     pub(crate) preview_art: Art<'nc>,
     pub(crate) search: Search,
+    pub(crate) overlay: Option<Overlay>,
+    pub(crate) overlay_plane: Option<OwnedPlane<'nc>>,
     pub(crate) viz: Option<Visualizer>,
     /// The spectrum's plane, and the header's above it (transparent where
     /// there's no text). Recreated when the width changes; the header's
@@ -163,6 +169,8 @@ impl<'nc> App<'nc> {
             browser: Browser::default(),
             preview_art: Art::new(nc),
             search: Search::new(),
+            overlay: None,
+            overlay_plane: None,
             viz: None,
             header_plane: None,
             viz_plane: None,
@@ -406,6 +414,10 @@ impl<'nc> App<'nc> {
 
     /// Returns false to quit.
     pub fn handle(&mut self, input: Input) -> Result<bool> {
+        if self.overlay.is_some() {
+            self.handle_overlay(input)?;
+            return Ok(true);
+        }
         if let Some(prompt) = self.prompt.take() {
             if input.id == 'y' as u32 && !input.ctrl {
                 match prompt {
@@ -457,8 +469,88 @@ impl<'nc> App<'nc> {
         }
     }
 
+    /// Keys while a panel is open: move, toggle (outputs), close. Nothing
+    /// else, so `q` closes the panel rather than quitting.
+    fn handle_overlay(&mut self, input: Input) -> Result<()> {
+        use Action::*;
+        self.pending.push(input);
+        let action = match self.cfg.keys.lookup(Ctx::List, &self.pending) {
+            Lookup::Prefix => return Ok(()),
+            Lookup::Action(a) => Some(a.clone()),
+            Lookup::None => None,
+        };
+        self.pending.clear();
+        let page = self.overlay_rows().max(1) as isize;
+        let Some(o) = self.overlay.as_mut() else { return Ok(()) };
+        match action {
+            Some(Up) => o.move_by(-1, page as usize),
+            Some(Down) => o.move_by(1, page as usize),
+            Some(UpHalf) => o.move_by(-page / 2, page as usize),
+            Some(DownHalf) => o.move_by(page / 2, page as usize),
+            Some(PageUp) => o.move_by(-page, page as usize),
+            Some(PageDown) => o.move_by(page, page as usize),
+            Some(Top) => o.move_by(isize::MIN / 2, page as usize),
+            Some(Bottom) => o.move_by(isize::MAX / 2, page as usize),
+            Some(Confirm | Select) => {
+                if let Some(cmd) = o.toggle() {
+                    self.mpd(&cmd)?;
+                }
+            }
+            _ if input.id == crate::nc::key::ESC || (input.id == 'q' as u32 && !input.ctrl) => self.overlay = None,
+            Some(Close | Quit | ShowHelp | ShowInfo | ShowCurrentSongInfo | ShowOutputs | ShowDecoders) => {
+                self.overlay = None;
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    /// Lines an overlay panel shows (set while drawing).
+    fn overlay_rows(&self) -> usize {
+        let (rows, _) = self.nc.stdplane().dim_yx();
+        rows.saturating_sub(8) as usize
+    }
+
+    /// The file under the current tab's cursor, for "song info".
+    fn selected_file(&self) -> Option<String> {
+        match self.tab {
+            Tab::Queue => self.queue.selected_first_song().map(|q| self.queue.songs[q].file.clone()),
+            Tab::Search => {
+                let r = &self.search.results;
+                r.selected_first_song().map(|q| r.songs[q].file.clone())
+            }
+            Tab::Directories => match self.browser.selected() {
+                Some(Entry::Song(s, _)) => Some(s.file.clone()),
+                _ => None,
+            },
+        }
+    }
+
     fn act(&mut self, action: Action) -> Result<bool> {
         use Action::*;
+        match action {
+            ShowHelp => {
+                self.overlay = Some(Overlay::help(&self.cfg.keys));
+                return Ok(true);
+            }
+            ShowCurrentSongInfo | ShowInfo => {
+                let file = if action == ShowInfo { self.selected_file() } else { self.song.as_ref().map(|(s, _)| s.file.clone()) };
+                match file {
+                    Some(f) => self.overlay = Some(Overlay::info(&mut self.conn, &f)?),
+                    None => self.say("no song there"),
+                }
+                return Ok(true);
+            }
+            ShowOutputs => {
+                self.overlay = Some(Overlay::outputs(&mut self.conn)?);
+                return Ok(true);
+            }
+            ShowDecoders => {
+                self.overlay = Some(Overlay::decoders(&mut self.conn)?);
+                return Ok(true);
+            }
+            _ => {}
+        }
         if self.tab == Tab::Directories && self.act_dirs(&action)? {
             return Ok(true);
         }
@@ -819,7 +911,26 @@ impl<'nc> App<'nc> {
 
     pub fn click(&mut self, m: Mouse) -> Result<()> {
         self.prompt = None;
-        let hit = self.hits.borrow().iter().find(|h| h.y == m.y && (h.x..h.x + h.w).contains(&m.x)).copied();
+        // Last drawn is on top (overlay panels over everything).
+        let hit = self.hits.borrow().iter().rev().find(|h| h.y == m.y && (h.x..h.x + h.w).contains(&m.x)).copied();
+        if self.overlay.is_some() {
+            let rows = self.overlay_rows();
+            let Some(o) = self.overlay.as_mut() else { return Ok(()) };
+            match hit.map(|h| h.target) {
+                _ if m.button == 4 => o.move_by(-WHEEL_ROWS, rows),
+                _ if m.button == 5 => o.move_by(WHEEL_ROWS, rows),
+                Some(Target::OverlayLine(i)) if m.button == 1 && o.selectable() => {
+                    o.sel = i;
+                    if let Some(cmd) = o.toggle() {
+                        self.mpd(&cmd)?;
+                    }
+                }
+                Some(Target::OverlayPanel | Target::OverlayLine(_)) => {}
+                // a click outside the panel closes it
+                _ => self.overlay = None,
+            }
+            return Ok(());
+        }
         let (wheel_up, wheel_down) = (m.button == 4, m.button == 5);
         let double = |t: Target, last: Option<(Instant, Target)>| {
             last.is_some_and(|(at, prev)| prev == t && at.elapsed() < DOUBLE_CLICK)

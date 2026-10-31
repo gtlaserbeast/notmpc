@@ -69,6 +69,9 @@ pub struct Theme {
     pub label: Style,
     /// Album artist on queue album headers.
     pub album_artist: Style,
+    /// Overlay panels (help, song info, ...): body and border.
+    pub panel: Style,
+    pub panel_border: Style,
     /// Spectrum gradient stops, bass to treble (RGB). Each bar takes the
     /// colour at its frequency, brighter the taller it is.
     pub visualizer_colors: Vec<u32>,
@@ -109,6 +112,8 @@ impl Default for Theme {
             progress_symbols: ["\u{e0b7}", "─", "\u{f189c}", " ", "\u{e0b5}"].map(String::from),
             label: Style::fg(YELLOW),
             album_artist: Style::fg(Color::Palette(6)),
+            panel: Style::fg(Color::Default).on(Color::Rgb(0x16130f)),
+            panel_border: Style::fg(ORANGE).on(Color::Rgb(0x16130f)),
             visualizer_colors: palette("aurora").expect("built-in palette"),
             dir_symbol: "🖿".into(),
             song_symbol: "🕪".into(),
@@ -361,6 +366,8 @@ impl Theme {
             "progress_track" => &mut self.progress_track,
             "label" => &mut self.label,
             "album_artist" => &mut self.album_artist,
+            "panel" => &mut self.panel,
+            "panel_border" => &mut self.panel_border,
 
             _ => bail!("unknown theme entry"),
         };

@@ -54,7 +54,7 @@ impl<'nc> Art<'nc> {
         self.hide();
         self.song = song.map(str::to_owned);
         self.visual = match song {
-            Some(uri) => fetch(conn, uri)?.map(Rc::new),
+            Some(uri) => fetch(conn, uri, MAX_PX)?.map(Rc::new),
             None => None,
         };
         Ok(())
@@ -97,10 +97,18 @@ impl<'nc> Art<'nc> {
     }
 }
 
-/// Fetches and decodes a song's cover. A cover notcurses can't decode is
-/// the same as no cover.
-pub fn fetch(conn: &mut Conn, uri: &str) -> Result<Option<Visual>> {
-    Ok(conn.picture(uri)?.and_then(|data| decode(&data).ok()))
+/// Largest side kept for the queue's cover (enough for a big pane on a 4K
+/// screen) and for Directories previews (a smaller pane, 24 cached).
+pub const MAX_PX: u32 = 1200;
+pub const PREVIEW_MAX_PX: u32 = 640;
+
+/// Fetches and decodes a song's cover, shrunk to at most `max` pixels a
+/// side. A cover notcurses can't decode is the same as no cover.
+pub fn fetch(conn: &mut Conn, uri: &str, max: u32) -> Result<Option<Visual>> {
+    Ok(conn.picture(uri)?.and_then(|data| decode(&data).ok()).map(|mut v| {
+        v.downscale(max);
+        v
+    }))
 }
 
 /// notcurses 3.0.8 can only decode from a file, so stage the bytes in one.

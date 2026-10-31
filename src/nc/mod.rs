@@ -320,6 +320,15 @@ impl Plane<'_> {
         unsafe { sys::ncplane_set_base(self.raw, c"".as_ptr(), 0, (T << 32) | T) };
     }
 
+    /// Makes empty cells blend with `rgb` over whatever is below: a
+    /// translucent backdrop (black dims everything under it).
+    pub fn set_base_blend(&mut self, rgb: u32) {
+        const NOT_DEFAULT: u64 = 0x4000_0000;
+        let ch = NOT_DEFAULT | sys::NCALPHA_BLEND as u64 | u64::from(rgb & 0xff_ffff);
+        // SAFETY: raw is a live plane; the EGC is a valid empty C string.
+        unsafe { sys::ncplane_set_base(self.raw, c"".as_ptr(), 0, (ch << 32) | ch) };
+    }
+
     /// Text drawn next keeps whatever background the planes below have.
     pub fn set_bg_transparent(&mut self) {
         // SAFETY: raw is a live plane.
@@ -382,6 +391,29 @@ impl Visual {
             bail!("couldn't decode {}", path.display());
         }
         Ok(Self { raw })
+    }
+}
+
+impl Visual {
+    /// Pixel size (height, width).
+    pub fn size(&self) -> Option<(u32, u32)> {
+        let mut g = sys::ncvgeom::default();
+        // SAFETY: raw is live; a null context asks only for pixel geometry.
+        let ok = unsafe { sys::ncvisual_geom(ptr::null(), self.raw, ptr::null(), &mut g) } == 0;
+        ok.then_some((g.pixy, g.pixx))
+    }
+
+    /// Shrinks the image so neither side exceeds `max` pixels (keeping its
+    /// shape). Covers are often 1400px+; this keeps memory down.
+    pub fn downscale(&mut self, max: u32) {
+        let Some((h, w)) = self.size() else { return };
+        if h <= max && w <= max {
+            return;
+        }
+        let k = max as f64 / h.max(w) as f64;
+        let (nh, nw) = (((h as f64 * k).round() as i32).max(1), ((w as f64 * k).round() as i32).max(1));
+        // SAFETY: raw is live.
+        unsafe { sys::ncvisual_resize(self.raw, nh, nw) };
     }
 }
 
