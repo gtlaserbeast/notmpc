@@ -98,8 +98,9 @@ pub struct Mouse {
 /// A key press (releases are filtered out by [`Nc::get`]).
 ///
 /// Normalized so legacy and kitty-protocol terminals agree: Ctrl+letter is
-/// lowercase with `ctrl`, Shift+letter is the uppercase letter, and
-/// Enter/Backspace are always `key::ENTER`/`key::BACKSPACE`.
+/// lowercase with `ctrl`, Shift+letter is the uppercase letter, Shift+`/`
+/// is `?` (and so on), and Enter/Backspace are always
+/// `key::ENTER`/`key::BACKSPACE`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Input {
     pub id: u32,
@@ -121,6 +122,10 @@ impl Input {
             } else if self.shift {
                 self.id = c.to_ascii_uppercase() as u32;
             }
+        } else if self.shift
+            && let Some(c) = char::from_u32(self.id).and_then(shifted)
+        {
+            self.id = c as u32;
         }
         // Shift is already part of a printable character.
         if key::is_printable(self.id) && !self.ctrl {
@@ -128,6 +133,15 @@ impl Input {
         }
         self
     }
+}
+
+/// The character Shift makes of an unshifted key, on a US layout. kitty's
+/// keyboard protocol, as notcurses sets it up, reports Shift+`/` as `/`
+/// with Shift rather than as `?`; legacy terminals send `?` itself.
+fn shifted(c: char) -> Option<char> {
+    const PAIRS: &str = "1!2@3#4$5%6^7&8*9(0)-_=+[{]}\\|;:'\",<.>/?`~";
+    let pairs: Vec<char> = PAIRS.chars().collect();
+    pairs.chunks(2).find(|p| p[0] == c).map(|p| p[1])
 }
 
 static RESIZED: AtomicBool = AtomicBool::new(false);
@@ -569,7 +583,18 @@ pub fn fit(s: &str, cols: usize) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::xterm_rgb;
+    use super::{Input, xterm_rgb};
+
+    #[test]
+    fn shift_makes_the_symbol() {
+        let key = |id: char, shift: bool| Input { id: id as u32, ctrl: false, alt: false, shift }.normalize();
+        for (base, sym) in [('/', '?'), ('.', '>'), (',', '<'), (';', ':'), ('\'', '"'), ('1', '!'), ('\\', '|')] {
+            assert_eq!(key(base, true), key(sym, false), "Shift+{base}");
+            assert_eq!(key(sym, false).id, sym as u32, "{sym} as sent by legacy terminals");
+        }
+        assert_eq!(key('g', true).id, 'G' as u32);
+        assert_eq!(key('/', false).id, '/' as u32);
+    }
 
     #[test]
     fn xterm_palette() {
