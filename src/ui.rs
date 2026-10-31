@@ -198,8 +198,11 @@ impl App<'_> {
                 if eighths == 0 {
                     continue;
                 }
-                // Dim enough for the header text on top to stay readable.
-                let c = Color::Rgb(scale(gradient(&stops, x as f32 / (cols.max(2) - 1) as f32), 0.30 + 0.40 * b));
+                // Dim enough for the header text on top to stay readable;
+                // in four steps, so a lit cell's colour changes (and is
+                // re-sent) only when its bar crosses one.
+                let level = (b * 4.0).round() / 4.0;
+                let c = Color::Rgb(scale(gradient(&stops, x as f32 / (cols.max(2) - 1) as f32), 0.30 + 0.40 * level));
                 for r in 0..rows {
                     let filled = eighths.saturating_sub(r * 8).min(8);
                     if filled == 0 {
@@ -219,6 +222,14 @@ impl App<'_> {
             }
         }
         self.viz_plane = Some(vp);
+    }
+
+    /// Just the next visualizer frame, for when nothing else on screen
+    /// has changed since the last `draw`.
+    pub fn draw_viz_only(&mut self) {
+        if let Some(cols) = self.viz_plane.as_ref().map(|p| p.dim_yx().1) {
+            self.draw_viz(cols);
+        }
     }
 
     fn hit(&self, y: u32, x: u32, w: u32, target: Target) {
@@ -761,7 +772,8 @@ impl App<'_> {
         let mut right = format!("{n} song{} · {}", if n == 1 { "" } else { "s" }, fmt_time(total));
         if let Some(pos) = self.current_pos().filter(|_| self.status.state != State::Stop) {
             let after: Duration = q.order[q.display_of[pos] + 1..].iter().map(|&i| q.songs[i].duration).sum();
-            let left = after + self.status.duration.saturating_sub(self.elapsed());
+            // whole seconds, so it ticks with the header clock
+            let left = after + self.status.duration.saturating_sub(Duration::from_secs(self.elapsed().as_secs()));
             right += &format!(" · {} left", fmt_time(left));
         }
         right.push(' ');

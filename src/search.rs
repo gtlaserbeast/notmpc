@@ -72,12 +72,18 @@ impl Search {
         Edit::Consumed
     }
 
-    /// Searches once typing pauses.
-    pub fn settle(&mut self, conn: &mut Conn) -> Result<()> {
+    /// Searches once typing pauses; true if it did.
+    pub fn settle(&mut self, conn: &mut Conn) -> Result<bool> {
         if self.edited_at.is_some_and(|t| t.elapsed() >= DEBOUNCE) {
             self.run(conn)?;
+            return Ok(true);
         }
-        Ok(())
+        Ok(false)
+    }
+
+    /// When `settle` will next have work to do.
+    pub fn settles_at(&self) -> Option<Instant> {
+        self.edited_at.map(|t| t + DEBOUNCE)
     }
 
     pub fn run(&mut self, conn: &mut Conn) -> Result<()> {

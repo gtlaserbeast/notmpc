@@ -86,16 +86,29 @@ fn main() -> Result<()> {
     let nc = Nc::new()?;
     nc.enable_mouse();
     let mut app = App::new(&nc, cfg, conn)?;
+    // Whether anything but the visualizer may have changed since the last
+    // full draw; visualizer frames alone redraw just its plane.
+    let mut full = true;
+    let mut shown = app.clock();
     loop {
         if nc.take_resize() {
             nc.refresh()?;
             // the refresh cleared the screen, and kitty its images with it
             app.forget_images();
+            full = true;
         }
-        app.draw()?;
+        let clock = app.clock();
+        if full || clock != shown {
+            app.draw()?;
+            shown = clock;
+        } else {
+            app.draw_viz_only();
+        }
         nc.render()?;
 
-        match nc.get(app.frame_interval())? {
+        let input = nc.get(app.frame_interval())?;
+        full = input.is_some();
+        match input {
             // MPD trouble is shown in the footer; it never ends the session.
             Some(Event::Key(i)) => match app.handle(i) {
                 Ok(false) => return Ok(()),
@@ -112,6 +125,7 @@ fn main() -> Result<()> {
 
         let mut changed = Vec::new();
         for ev in events.try_iter() {
+            full = true;
             match ev {
                 MpdEvent::Changed(c) => changed.extend(c),
                 MpdEvent::Lost(e) => app.offline = Some(e),
@@ -126,8 +140,12 @@ fn main() -> Result<()> {
         {
             app.say(format!("MPD: {e:#}"));
         }
-        if let Err(e) = app.tick() {
-            app.say(format!("MPD: {e:#}"));
+        match app.tick() {
+            Ok(changed) => full |= changed,
+            Err(e) => {
+                app.say(format!("MPD: {e:#}"));
+                full = true;
+            }
         }
     }
 }

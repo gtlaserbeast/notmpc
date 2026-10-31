@@ -222,6 +222,11 @@ impl Browser {
         Ok(())
     }
 
+    /// When `settle` will next have work to do.
+    pub fn settles_at(&self) -> Option<Instant> {
+        self.moved_at.map(|t| t + PREVIEW_DELAY)
+    }
+
     /// Loads the preview for the entry under the cursor once it has
     /// rested. Returns the cover to show (`None` = no change needed).
     pub fn settle(&mut self, conn: &mut Conn) -> Result<Option<(String, Option<Rc<Visual>>)>> {

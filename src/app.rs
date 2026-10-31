@@ -209,15 +209,35 @@ impl<'nc> App<'nc> {
         }
     }
 
-    /// How long the main loop may wait for input before redrawing.
+    /// How long the main loop may wait for input: until the screen next
+    /// changes by itself (a visualizer frame, the clock's next second, a
+    /// search or preview due, a message expiring), at most a second.
     pub fn frame_interval(&self) -> Duration {
+        // wake just after a deadline, not just before it
+        const MARGIN: Duration = Duration::from_millis(2);
+        let mut wait = Duration::from_secs(1);
         if self.viz_on && self.viz.as_ref().is_some_and(Visualizer::active) {
-            Duration::from_secs(1) / self.cfg.visualizer_fps
-        } else if self.is_playing() {
-            Duration::from_millis(250)
-        } else {
-            Duration::from_secs(1)
+            wait = wait.min(Duration::from_secs(1) / self.cfg.visualizer_fps);
         }
+        if self.is_playing() {
+            let into = Duration::from_nanos(self.elapsed().subsec_nanos().into());
+            wait = wait.min(Duration::from_secs(1) - into + MARGIN);
+        }
+        let now = Instant::now();
+        let deadlines = [
+            self.search.settles_at().filter(|_| self.tab == Tab::Search),
+            self.browser.settles_at().filter(|_| self.tab == Tab::Directories),
+            self.message.as_ref().map(|(_, at)| *at + MESSAGE_TTL).filter(|_| self.current_message().is_some()),
+        ];
+        for d in deadlines.into_iter().flatten() {
+            wait = wait.min(d.saturating_duration_since(now) + MARGIN);
+        }
+        wait
+    }
+
+    /// What changes on screen with time alone, apart from the visualizer.
+    pub fn clock(&self) -> (u64, bool) {
+        (self.elapsed().as_secs(), self.current_message().is_some())
     }
 
     /// Refetches whatever the idle subsystems in `changed` affect.
@@ -288,20 +308,25 @@ impl<'nc> App<'nc> {
         self.fetch_queue()
     }
 
-    /// Called every loop iteration.
-    pub fn tick(&mut self) -> Result<()> {
-        if self.is_playing() && self.fetched_at.elapsed() >= self.cfg.status_interval() {
+    /// Called every loop iteration; true if it changed what's on screen.
+    pub fn tick(&mut self) -> Result<bool> {
+        let mut changed = false;
+        // a little early, so polls ride the clock's wakeups
+        let due = self.cfg.status_interval().saturating_sub(Duration::from_millis(100));
+        if self.is_playing() && self.fetched_at.elapsed() >= due {
             self.poll_status()?;
+            changed = true;
         }
         if self.tab == Tab::Search {
-            self.search.settle(&mut self.conn)?;
+            changed |= self.search.settle(&mut self.conn)?;
         }
-        if self.tab == Tab::Directories
-            && let Some((key, cover)) = self.browser.settle(&mut self.conn)?
-        {
-            self.preview_art.set(&key, cover);
+        if self.tab == Tab::Directories && self.browser.moved_at.is_some() {
+            if let Some((key, cover)) = self.browser.settle(&mut self.conn)? {
+                self.preview_art.set(&key, cover);
+            }
+            changed |= self.browser.moved_at.is_none();
         }
-        Ok(())
+        Ok(changed)
     }
 
     /// MPD announces song and state changes but not the bitrate, which
