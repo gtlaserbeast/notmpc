@@ -156,9 +156,14 @@ impl Nc {
 
     /// Waits up to `timeout` for a key press.
     pub fn get(&self, timeout: Duration) -> Result<Option<Input>> {
+        // notcurses wants an absolute CLOCK_MONOTONIC deadline, not a duration.
+        let mut now = libc::timespec { tv_sec: 0, tv_nsec: 0 };
+        // SAFETY: now is a valid out-param.
+        unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut now) };
+        let nsec = now.tv_nsec as u64 + u64::from(timeout.subsec_nanos());
         let ts = sys::timespec {
-            tv_sec: timeout.as_secs() as _,
-            tv_nsec: timeout.subsec_nanos() as _,
+            tv_sec: (now.tv_sec as u64 + timeout.as_secs() + nsec / 1_000_000_000) as _,
+            tv_nsec: (nsec % 1_000_000_000) as _,
         };
         let mut ni = sys::ncinput::default();
         // SAFETY: raw is live; ts and ni outlive the call.

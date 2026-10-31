@@ -5,6 +5,7 @@ edition = "2024"
 
 [dependencies]
 anyhow = "1.0.104"
+libc = "0.2.191"
 
 [build-dependencies]
 bindgen = { version = "0.73.2", features = ["experimental"] }
