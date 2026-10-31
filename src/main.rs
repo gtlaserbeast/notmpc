@@ -1,5 +1,6 @@
 mod app;
 mod art;
+mod cli;
 mod config;
 mod keys;
 mod meta;
@@ -63,6 +64,14 @@ fn spawn_idle(target: Target) -> Result<Receiver<MpdEvent>> {
 }
 
 fn main() -> Result<()> {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    match args.first().map(String::as_str) {
+        Some("add") => return cli::run(cli::Mode::Add, &args[1..]),
+        Some("insert") => return cli::run(cli::Mode::Insert, &args[1..]),
+        Some(other) => anyhow::bail!("unknown command {other:?}; try: notmpc [add|insert PATH...]"),
+        None => {}
+    }
+
     // Load config and connect before taking over the terminal so errors
     // print normally.
     let cfg = Config::load()?;

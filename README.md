@@ -13,6 +13,23 @@ Needs notcurses ≥ 3.0.8 with headers, pkg-config, and clang (for bindgen).
 Follows mpc: `MPD_HOST` (`[password@]host` or a socket path) and `MPD_PORT`.
 Without them it tries `$XDG_RUNTIME_DIR/mpd/socket`, then `localhost:6600`.
 
+## Queueing from a file manager
+
+    notmpc add PATH...      # append files / directory trees
+    notmpc insert PATH...   # place them right after the current song
+
+Directories are walked in natural order (`Disc 2` before `Disc 10`).
+Files under MPD's music directory (symlinks resolved) are added by
+database URI, others as `file://`. If nothing is playing, the first new
+song starts. For yazi:
+
+    [[mgr.prepend_keymap]]
+    on  = [ "m", "a" ]
+    run = "shell 'notmpc add %s' --orphan"
+
+If playback-follows-cursor has moved the playing song when an insert
+arrives, the insert wins: the new songs play next.
+
 ## Configuration
 
 `~/.config/notmpc/config.toml`, all optional; see `config.example.toml`.
@@ -86,7 +103,7 @@ in italics.
 
 ## Roadmap
 
-1. Directories tab, plus `notmpc add` / `notmpc insert` for yazi
+1. Directories tab
 2. Spectrum visualizer behind the header, from MPD's FIFO output
 3. Search tab
 4. Waveform seek bar

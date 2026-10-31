@@ -2,6 +2,7 @@
 //! queue's display state lives in `queue.rs`.
 
 use std::cell::RefCell;
+use std::collections::HashSet;
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
@@ -106,6 +107,8 @@ pub struct App<'nc> {
     displaced: Option<Displaced>,
     /// When the cursor last moved by hand, until `retarget` acts on it.
     moved_at: Option<Instant>,
+    /// Songs that appeared right after the moved song; see `place_inserted`.
+    inserted: Vec<u32>,
     pub(crate) art: Art<'nc>,
 }
 
@@ -130,6 +133,7 @@ impl<'nc> App<'nc> {
             pending: Vec::new(),
             displaced: None,
             moved_at: None,
+            inserted: Vec::new(),
             art: Art::new(nc),
         };
         app.update(ALL_EVENTS)?;
@@ -146,6 +150,7 @@ impl<'nc> App<'nc> {
         let any = |set: &[&str]| changed.iter().any(|c| set.contains(&c.as_ref()));
         if any(QUEUE_EVENTS) {
             self.fetch_queue()?;
+            self.place_inserted()?;
         }
         if any(STATUS_EVENTS) {
             let before = self.status.song_id;
@@ -170,9 +175,35 @@ impl<'nc> App<'nc> {
     }
 
     fn fetch_queue(&mut self) -> Result<()> {
+        let known: HashSet<u32> = self.queue.songs.iter().filter_map(|s| s.id).collect();
         let songs = Song::parse_list(&self.conn.command("playlistinfo")?);
+        // Songs inserted right after the moved (playing) song were meant to
+        // play next (`notmpc insert`, `mpc insert`). See `place_inserted`.
+        if let Some(d) = self.displaced
+            && let Some(m) = songs.iter().position(|s| s.id == Some(d.id))
+        {
+            let fresh: Vec<u32> = songs[m + 1..].iter().map_while(|s| s.id.filter(|id| !known.contains(id))).collect();
+            if !fresh.is_empty() {
+                self.inserted = fresh;
+            }
+        }
         self.queue.set_songs(songs, self.displaced);
         Ok(())
+    }
+
+    /// Someone inserted songs to play next while the playing song was moved
+    /// for following: that wins over the cursor. Put the playing song back
+    /// home and the new songs right after it.
+    fn place_inserted(&mut self) -> Result<()> {
+        let fresh = std::mem::take(&mut self.inserted);
+        if fresh.is_empty() {
+            return Ok(());
+        }
+        self.restore()?;
+        let Some(cur) = self.status.song_id.and_then(|id| self.queue.pos_of_id(id)) else { return Ok(()) };
+        let cmds: Vec<String> = fresh.iter().enumerate().map(|(k, id)| format!("moveid {id} {}", cur + 1 + k)).collect();
+        self.conn.command_list(&cmds)?;
+        self.fetch_queue()
     }
 
     /// Called every loop iteration.
