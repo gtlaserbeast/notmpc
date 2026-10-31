@@ -37,7 +37,9 @@ visualizer_delay_ms = 150  # speakers' lag behind MPD; [ and ] tune it live (sav
 # current = { fg = "#dd6f00", bold = true }
 # progress_thumb = "#a7ff04"
 # album_artist = "cyan"
-# visualizer_colors = "aurora"  # or ember, ocean, sunset, mono, or ["#..", "#..", ...]
+# visualizer_colors = "aurora"  # or ember, ocean, sunset, mono, or a list of colours
+#                                 # (bass to treble): ["#7b2ff7", "#12c2a0"], or palette
+#                                 # slots that follow the terminal theme: ["2", "4"]
 # start cap, elapsed, thumb, remaining, end cap (" " leaves the spectrum
 # showing through); Nerd Font glyphs work too, e.g. "\ue0b7" / "\ue0b5" caps:
 # progress_symbols = ["", "━", "●", "─", ""]

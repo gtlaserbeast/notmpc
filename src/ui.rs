@@ -207,14 +207,17 @@ impl App<'_> {
             return false;
         }
         vp.erase();
-        let stops = &self.cfg.theme.visualizer_colors;
+        let stops: Vec<u32> =
+            self.cfg.theme.visualizer_colors.iter().map(|&c| self.nc.rgb(c).unwrap_or(0x8a8a8a)).collect();
         for (x, &(eighths, level)) in cells.iter().enumerate() {
             if eighths == 0 {
                 continue;
             }
             // Dim enough for the header text on top to stay readable.
-            let c =
-                Color::Rgb(scale(gradient(stops, x as f32 / (cols.max(2) - 1) as f32), 0.30 + 0.10 * f32::from(level)));
+            let c = Color::Rgb(scale(
+                gradient(&stops, x as f32 / (cols.max(2) - 1) as f32),
+                0.30 + 0.10 * f32::from(level),
+            ));
             for r in 0..rows {
                 let filled = eighths.saturating_sub(r * 8).min(8);
                 if filled == 0 {

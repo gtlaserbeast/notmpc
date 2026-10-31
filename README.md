@@ -109,6 +109,8 @@ give your own stops:
     [theme]
     visualizer_colors = "aurora"   # aurora (default), ember, ocean, sunset, mono
     # visualizer_colors = ["#7b2ff7", "#2f80ed", "#12c2a0"]
+    # visualizer_colors = ["2", "4"]   # terminal palette slots: follows the
+    #                                  # terminal's theme (read at startup)
 
 Cost at 173×45 in kitty, 30 fps, while playing: about 1% of a core for
 notmpc plus 1.2% for kitty. Frames that look the same as the last aren't

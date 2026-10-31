@@ -74,7 +74,7 @@ pub struct Theme {
     pub panel_border: Style,
     /// Spectrum gradient stops, bass to treble (RGB). Each bar takes the
     /// colour at its frequency, brighter the taller it is.
-    pub visualizer_colors: Vec<u32>,
+    pub visualizer_colors: Vec<Color>,
     pub dir_symbol: String,
     pub song_symbol: String,
 }
@@ -306,24 +306,21 @@ impl Theme {
             return Ok(());
         }
         if name == "visualizer_colors" {
+            // Terminal palette colours are fine: they're resolved to RGB
+            // with the palette notcurses reads at startup.
+            let one = |c: &String| match parse_color(c)? {
+                Color::Default => bail!("\"default\" has no fixed colour; use #rrggbb or a palette colour"),
+                c => Ok(c),
+            };
             let colors = match entry {
-                ThemeEntry::Color(name) => palette(&name).ok_or_else(|| anyhow::anyhow!("unknown palette {name:?}"))?,
+                ThemeEntry::Color(name) => match palette(&name) {
+                    Some(p) => p,
+                    None => vec![one(&name).with_context(|| format!("not a palette ({PALETTES}) or a colour"))?],
+                },
                 ThemeEntry::Style { .. } => bail!("expected a palette name or a list of colours"),
                 // a list of exactly five parses as the symbols shape
-                ThemeEntry::Symbols(five) => five
-                    .iter()
-                    .map(|c| match parse_color(c)? {
-                        Color::Rgb(rgb) => Ok(rgb),
-                        _ => bail!("visualizer colours must be #rrggbb"),
-                    })
-                    .collect::<Result<Vec<u32>>>()?,
-                ThemeEntry::List(list) => list
-                    .iter()
-                    .map(|c| match parse_color(c)? {
-                        Color::Rgb(rgb) => Ok(rgb),
-                        _ => bail!("visualizer colours must be #rrggbb"),
-                    })
-                    .collect::<Result<Vec<u32>>>()?,
+                ThemeEntry::Symbols(five) => five.iter().map(one).collect::<Result<_>>()?,
+                ThemeEntry::List(list) => list.iter().map(one).collect::<Result<_>>()?,
             };
             if colors.is_empty() {
                 bail!("need at least one colour");
@@ -378,16 +375,19 @@ impl Theme {
     }
 }
 
+const PALETTES: &str = "aurora, ember, ocean, sunset, mono";
+
 /// Built-in spectrum palettes, bass to treble.
-pub fn palette(name: &str) -> Option<Vec<u32>> {
-    Some(match name {
+pub fn palette(name: &str) -> Option<Vec<Color>> {
+    let rgb: Vec<u32> = match name {
         "aurora" => vec![0x7b2ff7, 0x2f80ed, 0x12c2a0],
         "ember" => vec![0xdd6f00, 0xe8b100, 0xa7ff04],
         "ocean" => vec![0x0b3d91, 0x1f8fd6, 0x7fe0f0],
         "sunset" => vec![0xc2185b, 0xff6f3c, 0xffc94a],
         "mono" => vec![0x8a8a8a],
         _ => return None,
-    })
+    };
+    Some(rgb.into_iter().map(Color::Rgb).collect())
 }
 
 /// `#rrggbb`, `default`, or an rmpc/ratatui colour name, which maps to the
@@ -433,6 +433,20 @@ mod tests {
         assert_eq!(parse_color("dark_gray").unwrap(), Color::Palette(8));
         assert_eq!(parse_color("default").unwrap(), Color::Default);
         assert!(parse_color("#fff").is_err());
+    }
+
+    #[test]
+    fn visualizer_colours_take_palettes_hex_or_terminal_colours() {
+        let viz =
+            |v: &str| Config::parse(&format!("[theme]\nvisualizer_colors = {v}")).map(|c| c.theme.visualizer_colors);
+        assert_eq!(viz(r#""mono""#).unwrap(), vec![Color::Rgb(0x8a8a8a)]);
+        assert_eq!(
+            viz(r##"["2", "light_blue", "#112233"]"##).unwrap(),
+            vec![Color::Palette(2), Color::Palette(12), Color::Rgb(0x112233)]
+        );
+        assert_eq!(viz(r#""cyan""#).unwrap(), vec![Color::Palette(6)], "one colour, not a palette");
+        assert!(viz(r#"["default", "2"]"#).is_err());
+        assert!(viz(r#""auroraa""#).is_err());
     }
 
     #[test]
