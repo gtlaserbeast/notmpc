@@ -16,6 +16,7 @@ use crate::meta::Meta;
 use crate::mpd::{Ack, Conn, Song, State, Status};
 use crate::nc::{Input, Mouse, Nc, OwnedPlane};
 use crate::overlay::Overlay;
+use crate::scrobble::Scrobble;
 use crate::search::{Edit, Search};
 use crate::viz::Visualizer;
 use crate::queue::{Displaced, Queue, Row};
@@ -24,6 +25,7 @@ use crate::queue::{Displaced, Queue, Row};
 const QUEUE_EVENTS: &[&str] = &["playlist"];
 const STATUS_EVENTS: &[&str] = &["player", "mixer", "options", "playlist", "update"];
 const DATABASE_EVENTS: &[&str] = &["database"];
+const SUBSCRIPTION_EVENTS: &[&str] = &["subscription"];
 /// Enough to refetch everything.
 pub const ALL_EVENTS: &[&str] = &["playlist", "player"];
 
@@ -76,6 +78,10 @@ pub enum Target {
     Caret(List, usize),
     /// The Search tab's query line.
     SearchInput,
+    /// The scrobble badge in the header.
+    Scrobble,
+    /// The queue's collapse-all / expand-all button.
+    FoldAll,
     /// An overlay panel, and one of its lines.
     OverlayPanel,
     OverlayLine(usize),
@@ -134,6 +140,7 @@ pub struct App<'nc> {
     pub(crate) preview_art: Art<'nc>,
     pub(crate) search: Search,
     pub(crate) overlay: Option<Overlay>,
+    pub(crate) scrobble: Scrobble,
     pub(crate) overlay_plane: Option<OwnedPlane<'nc>>,
     pub(crate) viz: Option<Visualizer>,
     /// The spectrum's plane, and the header's above it (transparent where
@@ -170,6 +177,7 @@ impl<'nc> App<'nc> {
             preview_art: Art::new(nc),
             search: Search::new(),
             overlay: None,
+            scrobble: Scrobble::new(),
             overlay_plane: None,
             viz: None,
             header_plane: None,
@@ -179,6 +187,8 @@ impl<'nc> App<'nc> {
             app.viz = Some(Visualizer::new(app.cfg.visualizer_fifo.clone(), app.cfg.visualizer_delay));
         }
         app.update(ALL_EVENTS)?;
+        app.scrobble.check_channel(&mut app.conn);
+        app.scrobble.poll();
         if let Some(cur) = app.current_pos() {
             app.queue.sel = app.queue.row_of_song(cur);
         }
@@ -222,10 +232,16 @@ impl<'nc> App<'nc> {
             if self.displaced.is_some_and(|d| Some(d.id) != self.status.song_id) || !self.can_follow() {
                 self.restore()?;
             }
+            if song_changed {
+                self.scrobble.song_changed();
+            }
             // The highlight rides along with playback until moved by hand.
             if self.follow && (song_changed || !self.can_follow()) {
                 self.primary = self.status.song_id;
             }
+        }
+        if any(SUBSCRIPTION_EVENTS) {
+            self.scrobble.check_channel(&mut self.conn);
         }
         if any(DATABASE_EVENTS) && self.browser.is_open() {
             self.browser.refresh(&mut self.conn)?;
@@ -270,6 +286,7 @@ impl<'nc> App<'nc> {
 
     /// Called every loop iteration.
     pub fn tick(&mut self) -> Result<()> {
+        self.scrobble.poll();
         if self.is_playing() && self.fetched_at.elapsed() >= self.cfg.status_interval {
             self.poll_status()?;
         }
@@ -547,6 +564,14 @@ impl<'nc> App<'nc> {
             }
             ShowDecoders => {
                 self.overlay = Some(Overlay::decoders(&mut self.conn)?);
+                return Ok(true);
+            }
+            Love => {
+                match Scrobble::love(&mut self.conn) {
+                    Ok(()) if self.scrobble.connected => self.say("♥ sent to mpdscribble"),
+                    Ok(()) => self.say("mpdscribble isn't connected; nothing to love with"),
+                    Err(e) => self.say(format!("love failed: {e:#}")),
+                }
                 return Ok(true);
             }
             _ => {}
@@ -982,6 +1007,11 @@ impl<'nc> App<'nc> {
             }
             _ if m.button != 1 => {}
             Some((_, Target::Tab(t))) => self.set_tab(t)?,
+            Some((_, Target::Scrobble)) => self.overlay = Some(Overlay::scrobble(&self.scrobble)),
+            Some((_, Target::FoldAll)) => {
+                let all = self.queue.groups.iter().all(|g| self.queue.collapsed.contains(&g.key));
+                self.queue.set_all_collapsed(!all);
+            }
             Some((h, Target::Progress)) => {
                 let d = self.status.duration.as_secs_f64();
                 if d > 0.0 && h.w > 0 {

@@ -41,6 +41,8 @@ pub enum Action {
     CommandMode,
     /// notmpc: playback follows the queue cursor (foobar2000-style).
     ToggleFollow,
+    /// notmpc: love the playing song on Last.fm (via mpdscribble).
+    Love,
     /// notmpc: nudge the visualizer's delay to match the speakers.
     VisualizerDelayDown,
     VisualizerDelayUp,
@@ -131,6 +133,7 @@ impl FromStr for Action {
             "ShowDownloads" => ShowDownloads,
             "Partition" => Partition,
             "ToggleFollow" => ToggleFollow,
+            "Love" => Love,
             "VisualizerDelayDown" => VisualizerDelayDown,
             "VisualizerDelayUp" => VisualizerDelayUp,
             "AddRandom" => AddRandom,
@@ -374,6 +377,7 @@ const DEFAULTS: &[(&str, &[(&str, &str)])] = &[
             ("R", "AddRandom"),
             // notmpc
             ("F", "ToggleFollow"),
+            ("*", "Love"),
             ("[", "VisualizerDelayDown"),
             ("]", "VisualizerDelayUp"),
         ],

@@ -16,6 +16,7 @@ use anyhow::Result;
 
 use crate::app::{App, Hit, List, Mode, Prompt, TABS, Tab, Target};
 use crate::queue::{Queue, Row};
+use crate::scrobble::Health;
 use crate::art::Rect;
 use crate::browser::Entry;
 use crate::config::{Style, Theme};
@@ -220,6 +221,26 @@ impl App<'_> {
         if s.updating {
             right0.push(("Updating… ".into(), t.volume));
         }
+        // scrobble badge
+        let sc = &self.scrobble;
+        let badge = match sc.health() {
+            Health::Absent => t.dim,
+            Health::Ok => t.text,
+            Health::Warning => t.volume,
+        };
+        let badge_start = segs_width(&right0);
+        right0.push(("last.fm".into(), badge));
+        if sc.health() == Health::Warning {
+            right0.push(("!".into(), t.volume));
+        }
+        if sc.submitted {
+            right0.push((" ✓".into(), t.progress_thumb));
+        }
+        if sc.backlog > 0 {
+            right0.push((format!(" ·{}", sc.backlog), t.date));
+        }
+        let badge_w = segs_width(&right0) - badge_start;
+        right0.push(("   ".into(), t.text));
         right0.push(("Volume: ".into(), t.volume));
         match s.volume {
             Some(v) => {
@@ -239,7 +260,9 @@ impl App<'_> {
         };
         draw_three(p, 0, cols, &left0, &center0, &right0);
         let rw = segs_width(&right0);
-        self.hit(0, cols.saturating_sub(rw), rw, Target::Volume);
+        let x0 = cols.saturating_sub(rw);
+        self.hit(0, x0 + badge_start, badge_w, Target::Scrobble);
+        self.hit(0, x0 + badge_start + badge_w, rw - badge_start - badge_w, Target::Volume);
 
         // row 1: time (bitrate, format)   artist - album   modes
         let mut info = format!("{} / {}", fmt_time(self.elapsed()), fmt_time(s.duration));
@@ -340,6 +363,17 @@ impl App<'_> {
             self.hit(y, x, end - x, Target::Tab(*tab));
             x = end + GAP;
         }
+        // the queue's fold-all button, at the far right
+        let q = &self.queue;
+        if self.tab == Tab::Queue && q.grouping && !q.groups.is_empty() {
+            let all = q.groups.iter().all(|g| q.collapsed.contains(&g.key));
+            let label = if all { "▾ expand all " } else { "▸ collapse all " };
+            let w = nc::width(label) as u32;
+            if x + w < cols {
+                put(p, y, cols - w, label, t.dim);
+                self.hit(y, cols - w, w, Target::FoldAll);
+            }
+        }
     }
 
     fn draw_queue_tab(&mut self, p: &mut Plane, body: Rect) -> Result<()> {
@@ -380,7 +414,12 @@ impl App<'_> {
         pl.erase();
 
         let label_w = o.lines.iter().filter(|l| !l.heading).map(|l| nc::width(&l.label)).max().unwrap_or(0).min(28) as u32;
-        let content_w = o.lines.iter().map(|l| nc::width(&l.label).min(28) + 2 + nc::width(&l.value)).max().unwrap_or(20) as u32;
+        let content_w = o
+            .lines
+            .iter()
+            .map(|l| if l.heading { nc::width(&l.label) } else { label_w as usize + 2 + nc::width(&l.value) })
+            .max()
+            .unwrap_or(20) as u32;
         let w = (content_w + 6).clamp(40, cols.saturating_sub(4).min(110));
         let body_h = (o.lines.len() as u32).min(rows.saturating_sub(8));
         let h = body_h + 4;

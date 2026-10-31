@@ -5,6 +5,7 @@ use anyhow::Result;
 use crate::keys::{Action, Keymap};
 use crate::mpd::{Conn, Song, quote};
 use crate::nc::{Input, key};
+use crate::scrobble::Scrobble;
 
 #[derive(Clone, Debug)]
 pub struct Output {
@@ -121,6 +122,30 @@ impl Overlay {
         }
         let title = Song::parse_list(&pairs).first().and_then(|s| s.title.clone()).unwrap_or_else(|| "Song".into());
         Ok(Self { kind: Kind::Info, title, lines, scroll: 0, sel: 0 })
+    }
+
+    pub fn scrobble(sc: &Scrobble) -> Self {
+        let mut lines = vec![Line::heading("mpdscribble")];
+        lines.push(Line::pair(
+            "MPD",
+            if sc.connected { "connected (subscribed to the mpdscribble channel)" } else { "not connected: is mpdscribble running?" },
+        ));
+        let journal = sc.journal.as_ref().map_or("(no journal configured)".into(), |j| j.display().to_string());
+        lines.push(Line::pair("Unsent", format!("{} scrobble{}  ({journal})", sc.backlog, if sc.backlog == 1 { "" } else { "s" })));
+        lines.push(Line::pair("This song", if sc.submitted { "submission logged ✓" } else { "no submission logged yet" }));
+        let log = sc.log.as_ref().map_or("(none)".into(), |l| l.display().to_string());
+        lines.push(Line::heading(format!("Recent messages ({log})")));
+        if sc.recent.is_empty() {
+            lines.push(Line::pair("", "none"));
+        }
+        for m in sc.recent.iter().rev() {
+            let (when, msg) = m.split_at(m.len().min(15));
+            lines.push(Line::pair(when, msg.trim()));
+        }
+        lines.push(Line::heading("Note"));
+        lines.push(Line::pair("", "At verbose = 1 mpdscribble logs only problems; set verbose = 2 in"));
+        lines.push(Line::pair("", "mpdscribble.conf to see submissions here (and get the ✓ badge)."));
+        Self { kind: Kind::Info, title: "Scrobbling".into(), lines, scroll: 0, sel: 0 }
     }
 
     pub fn outputs(conn: &mut Conn) -> Result<Self> {
