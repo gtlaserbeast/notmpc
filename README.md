@@ -15,15 +15,29 @@ Without them it tries `$XDG_RUNTIME_DIR/mpd/socket`, then `localhost:6600`.
 
 ## Keys
 
-| key            | action                                 |
-|----------------|----------------------------------------|
-| space / p      | play / pause                           |
-| s              | stop                                   |
-| n / N (> / <)  | next / previous                        |
-| ← / →          | seek ±5s                               |
-| + / -          | volume ±5                              |
+Everywhere:
+
+| key            | action                                    |
+|----------------|-------------------------------------------|
+| 1 / 2 / Tab    | now playing / queue / switch              |
+| space / p      | play / pause                              |
+| s              | stop                                      |
+| n / N (> / <)  | next / previous                           |
+| ← / →          | seek ±5s                                  |
+| + / -          | volume ±5                                 |
 | r z y c        | toggle repeat / random / single / consume |
-| q / Esc        | quit                                   |
+| q / Esc        | quit                                      |
+
+Queue:
+
+| key               | action                |
+|-------------------|-----------------------|
+| j / k (↓ / ↑)     | move                  |
+| PgDn / PgUp       | page                  |
+| g / G (Home/End)  | top / bottom          |
+| Enter             | play selected         |
+| d / Del           | remove selected       |
+| .                 | jump to current song  |
 
 ## Layout
 
@@ -32,12 +46,14 @@ Without them it tries `$XDG_RUNTIME_DIR/mpd/socket`, then `localhost:6600`.
   `wrap_static_fns` turns notcurses' `static inline` API into linkable shims.
 - `src/nc/` is a thin safe wrapper over the calls we use; `nc::sys` is raw.
 - `src/mpd.rs` is a small blocking protocol client. A second connection
-  sits in `idle` on its own thread and signals the UI loop when anything
-  changes.
+  sits in `idle` on its own thread and tells the UI loop which subsystems
+  changed.
+- `src/app.rs` holds state, keys, and the views; `src/art.rs` fetches covers
+  (`readpicture`, then `albumart`), decodes them with notcurses' ffmpeg
+  backend, and blits them onto their own planes — pixel graphics when the
+  terminal supports them, half-blocks otherwise.
 
 ## Roadmap
 
-1. Queue view
-2. Library browser
-3. Album art plane (`readpicture`/`albumart` + `ncvisual`)
-4. Spectrum visualizer from MPD's FIFO output
+1. Library browser
+2. Spectrum visualizer from MPD's FIFO output

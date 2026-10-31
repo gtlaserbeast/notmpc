@@ -24,7 +24,7 @@ fn main() {
     let bindings = bindgen::Builder::default()
         .header("wrapper.h")
         .clang_args(lib.include_paths.iter().map(|p| format!("-I{}", p.display())))
-        .allowlist_function("(notcurses|ncplane|ncinput|nccell|ncchannels?|ncvisual|ncpile)_.*")
+        .allowlist_function("(notcurses|ncplane|ncinput|nccell|ncchannels?|ncvisual|ncpile)_.*|ncstrwidth")
         .allowlist_type("(notcurses|ncplane|ncinput|nccell|ncvisual|ncblitter|ncscale|ncintype|ncalign).*")
         .allowlist_var("(NCOPTION|NCSTYLE|NCKEY|NCTYPE|NCALPHA|NCBLIT|NCSCALE|NCVISUAL_OPTION)_.*")
         .wrap_static_fns(true)
