@@ -181,10 +181,11 @@ pub enum ProgressBar {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum VisualizerStyle {
-    /// A bar per column, in eighth blocks.
-    Blocks,
-    /// Two bars per column in braille dots: twice the detail, same cost.
+    /// Two bars per column in braille dots: twice the detail of blocks,
+    /// the same CPU, half the bytes.
     Braille,
+    /// A bar per column in eighth blocks, full cells as background.
+    Blocks,
 }
 
 /// The config file's keys, one to one; anything left out keeps its default.
@@ -239,7 +240,7 @@ impl Default for Config {
                 .join("mpd/visualizer.fifo"),
             visualizer_rows: 3,
             visualizer_fps: 20,
-            visualizer_style: VisualizerStyle::Blocks,
+            visualizer_style: VisualizerStyle::Braille,
             visualizer_delay_ms: 150,
             key_overrides: HashMap::new(),
             theme_overrides: HashMap::new(),

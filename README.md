@@ -98,9 +98,10 @@ transparent plane above it. It needs MPD's `fifo` output:
 
 notmpc reads `$XDG_RUNTIME_DIR/mpd/visualizer.fifo` by default
 (`visualizer_fifo`), at 20 fps (`visualizer_fps`), over 3 rows
-(`visualizer_rows`). `visualizer_style = "braille"` draws two bars per
-column in braille dots (twice the detail, the same cost) instead of the
-default `"blocks"`. It idles when nothing plays. `V` hides / shows it
+(`visualizer_rows`), two bars per column in braille dots. With
+`visualizer_style = "blocks"` it's one bar per column in eighth blocks,
+which colours whole cells (twice the bytes, the same CPU). It idles when
+nothing plays. `V` hides / shows it
 (saved); `visualizer = false` in the config turns it off from the start.
 
 **Delay.** MPD writes the FIFO as it plays, but PipeWire buffers before the
