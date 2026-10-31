@@ -35,6 +35,29 @@ Mouse: click to select, double-click to open / play, click the left column
 to go up, click an entry in the preview to open its folder. Adding starts
 playback on the first new song if nothing is playing.
 
+## Search
+
+Type to search (live, case-insensitive substring). Words match any tag or
+the file path; `field:value` narrows a word to one tag (artist, album,
+albumartist, title, genre, date, composer, file); `"double quotes"` keep
+spaces. Terms are ANDed: `artist:autechre album:"tri repetae"`.
+
+Results are grouped by album (album artist, year, album, track). Copies of
+one album in different folders stay separate, labelled with the folder.
+
+| key                  | action                                         |
+|----------------------|------------------------------------------------|
+| typing               | edit the query (C-w word, C-u line)            |
+| Enter / ↓ / Esc      | to the results (Enter searches immediately)    |
+| i or /               | back to the query                              |
+| Enter                | queue and play (an album header: the album)    |
+| a / A                | add selection / all results                    |
+| t                    | play next (insert after the current song)      |
+| Space, h / l         | mark, collapse / expand album                  |
+
+Mouse: click the query line to edit, a result to select, double-click to
+queue and play, the ▾/▸ arrow to fold.
+
 ## Visualizer
 
 A spectrum (one bar per column, 40 Hz–16 kHz, log-spaced) fills the
@@ -153,14 +176,13 @@ in italics.
 
 ## Roadmap
 
-1. Search tab
-2. Overlays: help (`?`), song info (`oI`), outputs (`oo`), decoders (`op`)
-3. Scrobble badge in the header from mpdscribble: dim when it isn't
+1. Overlays: help (`?`), song info (`oI`), outputs (`oo`), decoders (`op`)
+2. Scrobble badge in the header from mpdscribble: dim when it isn't
    subscribed to MPD's `mpdscribble` channel, ✓ once the current track
    scrobbled, a warning with the journal's backlog count; plus a love key
    (`sendmessage mpdscribble love`). Per-track status needs mpdscribble to
    log to a file notmpc can read.
-4. A collapse-all / expand-all button on the queue (the keys are `H` / `L`)
-5. Waveform seek bar: the track's loudness envelope as a 2-row pixel strip,
+3. A collapse-all / expand-all button on the queue (the keys are `H` / `L`)
+4. Waveform seek bar: the track's loudness envelope as a 2-row pixel strip,
    played part in an orange gradient (tinted from the cover), with a 2-row
    pixel-art rider bobbing along the contour: an Omnium Cargo bike

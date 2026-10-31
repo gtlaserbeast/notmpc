@@ -14,8 +14,8 @@ use std::time::Duration;
 
 use anyhow::Result;
 
-use crate::app::{App, Hit, Mode, Prompt, TABS, Tab, Target};
-use crate::queue::Row;
+use crate::app::{App, Hit, List, Mode, Prompt, TABS, Tab, Target};
+use crate::queue::{Queue, Row};
 use crate::art::Rect;
 use crate::browser::Entry;
 use crate::config::{Style, Theme};
@@ -150,8 +150,7 @@ impl App<'_> {
             }
             Tab::Search => {
                 self.art.show(None)?;
-                let t = self.cfg.theme.dim;
-                put_centered(&mut p, body.y + body.rows / 2, 0, cols, "not built yet", t);
+                self.draw_search(&mut p, body);
             }
         }
         self.draw_footer(&mut p, rows - 1, cols);
@@ -353,22 +352,74 @@ impl App<'_> {
             self.art.show(None)?;
         }
         let x = if art_cols > 0 { art_cols + 1 } else { 0 };
-        self.draw_queue_list(p, Rect { y: body.y, x, rows: body.rows, cols: body.cols - x });
+        self.draw_song_list(p, Rect { y: body.y, x, rows: body.rows, cols: body.cols - x }, List::Queue);
         Ok(())
     }
 
-    fn draw_queue_list(&mut self, p: &mut Plane, area: Rect) {
+    /// Query line, a summary, then results grouped by album.
+    fn draw_search(&mut self, p: &mut Plane, body: Rect) {
+        let t = self.cfg.theme.clone();
+        let (y, cols) = (body.y, body.cols);
+        self.hit(y, 0, cols, Target::SearchInput);
+
+        let hint = "artist: album: albumartist: title: genre: date: file:  \"quoted words\" ";
+        let hw = nc::width(hint) as u32;
+        let show_hint = cols > hw + 40;
+        let mut x = put(p, y, 1, "Search: ", t.label);
+        let room = cols.saturating_sub(x + 2 + if show_hint { hw } else { 0 }) as usize;
+        // Keep the end of a long query (where you type) in view.
+        let q = &self.search.query;
+        let visible: String = if nc::width(q) > room {
+            let chars: Vec<char> = q.chars().collect();
+            chars[chars.len().saturating_sub(room.saturating_sub(1))..].iter().collect()
+        } else {
+            q.clone()
+        };
+        x = put(p, y, x, &visible, t.title);
+        if self.search.editing {
+            put(p, y, x, "▏", t.progress_thumb);
+        }
+        if show_hint {
+            put(p, y, cols - hw, hint, t.dim);
+        }
+
+        let r = &self.search.results;
+        let summary = if self.search.is_empty_query() {
+            "Type to search: words match any tag or the path; field:value narrows to one tag. Enter: results, i: back here".to_owned()
+        } else if r.songs.is_empty() {
+            "No matches".to_owned()
+        } else {
+            let n = r.songs.len();
+            format!(
+                "{n} song{} in {} album{}{}  ·  Enter play · a add · A add all · t play next · Space mark · h/l fold · i edit",
+                if n == 1 { "" } else { "s" },
+                r.groups.len(),
+                if r.groups.len() == 1 { "" } else { "s" },
+                if self.search.truncated { " (first 1000 per search)" } else { "" },
+            )
+        };
+        put(p, y + 1, 1, &nc::fit(&summary, cols.saturating_sub(2) as usize), t.dim);
+
+        let list = Rect { y: y + 2, x: 0, rows: body.rows.saturating_sub(2), cols };
+        self.draw_song_list(p, list, List::Search);
+    }
+
+    /// The queue, or search results: album headers and songs, with the
+    /// highlight (queue only) and the browse cursor.
+    fn draw_song_list(&mut self, p: &mut Plane, area: Rect, kind: List) {
         let t = self.cfg.theme.clone();
         let h = area.rows as usize;
         self.list_height = h;
-        if self.queue.is_empty() {
-            put_centered(p, area.y + area.rows / 2, area.x, area.cols, "Queue is empty", t.dim);
+        if self.list(kind).is_empty() {
+            if kind == List::Queue {
+                put_centered(p, area.y + area.rows / 2, area.x, area.cols, "Queue is empty", t.dim);
+            }
             return;
         }
 
         // Keep the cursor visible, along with its album header when there's
         // one directly above it.
-        let q = &mut self.queue;
+        let q = self.list_mut(kind);
         let target = q.sel;
         let top = match target.checked_sub(1).map(|r| q.rows[r]) {
             Some(Row::Group(_)) => target - 1,
@@ -384,12 +435,13 @@ impl App<'_> {
         // Rows are drawn one cell in from each side, leaving room for the
         // browse cursor's dotted rails.
         let (x, w) = (area.x + 1, area.cols.saturating_sub(2));
-        let scroll = self.queue.scroll;
-        for line in scroll..(scroll + h).min(self.queue.rows.len()) {
-            let row = self.queue.rows[line];
+        let q = self.list(kind);
+        let scroll = q.scroll;
+        for line in scroll..(scroll + h).min(q.rows.len()) {
+            let row = q.rows[line];
             let y = area.y + (line - scroll) as u32;
-            let browse = line == self.queue.sel;
-            let primary = self.is_primary(row);
+            let browse = line == q.sel;
+            let primary = kind == List::Queue && self.is_primary(row);
             let fill = if primary {
                 Some(t.cursor)
             } else if browse {
@@ -401,19 +453,43 @@ impl App<'_> {
                 put(p, y, area.x, &" ".repeat(area.cols as usize), f);
             }
             if let Row::Group(g) = row {
-                self.hit(y, x, 2, Target::Caret(g));
+                self.hit(y, x, 2, Target::Caret(kind, g));
             }
-            self.hit(y, area.x, area.cols, Target::Row(row));
+            self.hit(y, area.x, area.cols, Target::Row(kind, row));
             let hl = Highlight { primary, fill };
             match row {
-                Row::Group(g) => self.draw_group_header(p, y, x, w, g, hl, &t),
-                Row::Song(i) => self.draw_song_row(p, y, x, w, i, hl, &t),
+                Row::Group(g) => self.draw_group_header(p, y, x, w, (kind, g), hl, &t),
+                Row::Song(i) => self.draw_song_row(p, y, x, w, (kind, i), hl, &t),
             }
             if browse {
                 let rail = Style { bg: fill.map_or(Color::Default, |f| f.bg), ..t.browse_rail };
                 put(p, y, area.x, "┆", rail);
                 put(p, y, area.x + area.cols - 1, "┆", rail);
             }
+        }
+    }
+
+    fn list(&self, kind: List) -> &Queue {
+        match kind {
+            List::Queue => &self.queue,
+            List::Search => &self.search.results,
+        }
+    }
+
+    fn list_mut(&mut self, kind: List) -> &mut Queue {
+        match kind {
+            List::Queue => &mut self.queue,
+            List::Search => &mut self.search.results,
+        }
+    }
+
+    /// Whether song `i` of the list is the one playing: by queue id in the
+    /// queue, by file in search results (which aren't queue entries).
+    fn is_playing_song(&self, kind: List, i: usize) -> bool {
+        let s = &self.list(kind).songs[i];
+        match kind {
+            List::Queue => s.id.is_some() && s.id == self.status.song_id,
+            List::Search => self.song.as_ref().is_some_and(|(cur, _)| cur.file == s.file),
         }
     }
 
@@ -431,12 +507,12 @@ impl App<'_> {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn draw_group_header(&self, p: &mut Plane, y: u32, x: u32, w: u32, g: usize, hl: Highlight, t: &Theme) {
-        let q = &self.queue;
+    fn draw_group_header(&self, p: &mut Plane, y: u32, x: u32, w: u32, (kind, g): (List, usize), hl: Highlight, t: &Theme) {
+        let q = self.list(kind);
         let group = &q.groups[g];
         let m = &q.metas[q.order[group.start]];
         let collapsed = q.collapsed.contains(&group.key);
-        let playing_here = self.current_pos().is_some_and(|c| q.group_of_song(c) == g);
+        let playing_here = q.group_songs(g).iter().any(|&i| self.is_playing_song(kind, i));
         let st = |s: Style| italic_if(hl.apply(s), m.inferred);
 
         // A collapsed album that's playing gets the ▶ on its header.
@@ -457,6 +533,10 @@ impl App<'_> {
             left.push((" · ".into(), st(t.dim)));
             left.push((artist.to_owned(), st(t.album_artist)));
         }
+        if group.ambiguous {
+            let folder = m.dir.rsplit('/').next().unwrap_or(&m.dir);
+            left.push((format!("  {folder}"), st(t.dim)));
+        }
         let tracks = if group.len == 1 { "1 track".into() } else { format!("{} tracks", group.len) };
         let right = format!(" {tracks} · {} ", fmt_time(group.total));
         let rw = nc::width(&right) as u32;
@@ -468,12 +548,12 @@ impl App<'_> {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn draw_song_row(&self, p: &mut Plane, y: u32, x: u32, w: u32, i: usize, hl: Highlight, t: &Theme) {
-        let q = &self.queue;
+    fn draw_song_row(&self, p: &mut Plane, y: u32, x: u32, w: u32, (kind, i): (List, usize), hl: Highlight, t: &Theme) {
+        let q = self.list(kind);
         let song = &q.songs[i];
         let m = &q.metas[i];
-        let current = song.id.is_some() && song.id == self.status.song_id;
-        let next = !current && song.id.is_some() && song.id == self.status.next_id;
+        let current = self.is_playing_song(kind, i);
+        let next = kind == List::Queue && !current && song.id.is_some() && song.id == self.status.next_id;
         let marked = song.id.is_some_and(|id| q.marked.contains(&id));
 
         // The highlight and current-song styles override the column styles.

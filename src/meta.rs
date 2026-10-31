@@ -15,6 +15,9 @@ pub struct Meta {
     pub year: String,
     pub track: Option<u32>,
     pub disc: Option<u32>,
+    /// The album's folder: the song's, or its parent's for disc subfolders
+    /// (`CD1`, `Disc 2`). Tells apart two copies of one album.
+    pub dir: String,
     /// Some fields came from the path rather than tags.
     pub inferred: bool,
 }
@@ -45,9 +48,24 @@ impl Meta {
             year,
             track: song.track.or(file_track),
             disc: song.disc,
+            dir: album_dir(&song.file).to_owned(),
             inferred,
         }
     }
+}
+
+/// `A/B/Album/CD2/01.flac` → `A/B/Album`; `A/B/Album/01.flac` → `A/B/Album`.
+fn album_dir(file: &str) -> &str {
+    let dir = file.rsplit_once('/').map_or("", |(d, _)| d);
+    let (parent, name) = dir.rsplit_once('/').unwrap_or(("", dir));
+    let lower = name.to_ascii_lowercase();
+    let disc = ["cd", "disc", "disk"].iter().any(|p| {
+        lower.strip_prefix(p).is_some_and(|rest| {
+            let rest = rest.trim_start_matches([' ', '_', '-', '.']);
+            !rest.is_empty() && rest.bytes().all(|b| b.is_ascii_digit())
+        })
+    });
+    if disc && !parent.is_empty() { parent } else { dir }
 }
 
 #[derive(Default)]
@@ -131,6 +149,14 @@ mod tests {
     fn falls_back_to_top_folder_for_artist() {
         let m = Meta::of(&song("Boards of Canada/Geogaddi/03 Music Is Math.flac"));
         assert_eq!((m.artist.as_str(), m.album.as_str()), ("Boards of Canada", "Geogaddi"));
+    }
+
+    #[test]
+    fn album_dir_skips_disc_folders() {
+        assert_eq!(album_dir("A/Album/CD2/01.flac"), "A/Album");
+        assert_eq!(album_dir("A/Album/Disc 1/01.flac"), "A/Album");
+        assert_eq!(album_dir("A/Album/01.flac"), "A/Album");
+        assert_eq!(album_dir("A/CDs/01.flac"), "A/CDs");
     }
 
     #[test]

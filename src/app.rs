@@ -15,6 +15,7 @@ use crate::keys::{Action, Ctx, Lookup};
 use crate::meta::Meta;
 use crate::mpd::{Ack, Conn, Song, State, Status};
 use crate::nc::{Input, Mouse, Nc, OwnedPlane};
+use crate::search::{Edit, Search};
 use crate::viz::Visualizer;
 use crate::queue::{Displaced, Queue, Row};
 
@@ -54,6 +55,13 @@ pub enum Mode {
     Follow,
 }
 
+/// Which song list a row belongs to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum List {
+    Queue,
+    Search,
+}
+
 /// What's under a clickable region.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Target {
@@ -62,9 +70,11 @@ pub enum Target {
     Progress,
     Mode(Mode),
     Volume,
-    Row(Row),
+    Row(List, Row),
     /// The fold arrow on an album header.
-    Caret(usize),
+    Caret(List, usize),
+    /// The Search tab's query line.
+    SearchInput,
     /// A Directories entry: column (0 parent, 1 current, 2 preview), index.
     Entry(u8, usize),
 }
@@ -118,6 +128,7 @@ pub struct App<'nc> {
     pub(crate) art: Art<'nc>,
     pub(crate) browser: Browser,
     pub(crate) preview_art: Art<'nc>,
+    pub(crate) search: Search,
     pub(crate) viz: Option<Visualizer>,
     /// The spectrum's plane, and the header's above it (transparent where
     /// there's no text). Recreated when the width changes; the header's
@@ -151,6 +162,7 @@ impl<'nc> App<'nc> {
             art: Art::new(nc),
             browser: Browser::default(),
             preview_art: Art::new(nc),
+            search: Search::new(),
             viz: None,
             header_plane: None,
             viz_plane: None,
@@ -252,6 +264,9 @@ impl<'nc> App<'nc> {
     pub fn tick(&mut self) -> Result<()> {
         if self.is_playing() && self.fetched_at.elapsed() >= self.cfg.status_interval {
             self.poll_status()?;
+        }
+        if self.tab == Tab::Search {
+            self.search.settle(&mut self.conn)?;
         }
         if self.tab == Tab::Directories
             && let Some((key, cover)) = self.browser.settle(&mut self.conn)?
@@ -402,11 +417,27 @@ impl<'nc> App<'nc> {
             }
             return Ok(true);
         }
+        if self.tab == Tab::Search && self.search.editing && self.pending.is_empty() {
+            match self.search.edit(input) {
+                Edit::Consumed => return Ok(true),
+                Edit::Submit => {
+                    self.search.run(&mut self.conn)?;
+                    self.search.editing = false;
+                    return Ok(true);
+                }
+                Edit::Leave => {
+                    self.search.editing = false;
+                    return Ok(true);
+                }
+                Edit::Pass => {}
+            }
+        }
         let ctx = match self.tab {
             Tab::Queue => Ctx::Queue,
             Tab::Directories => Ctx::List,
-            // The other tabs only have global keys until they're built.
-            _ => Ctx::Global,
+            // While typing a query only global keys apply (Tab, ...).
+            Tab::Search if self.search.editing => Ctx::Global,
+            Tab::Search => Ctx::List,
         };
         self.pending.push(input);
         let action = match self.cfg.keys.lookup(ctx, &self.pending) {
@@ -429,6 +460,9 @@ impl<'nc> App<'nc> {
     fn act(&mut self, action: Action) -> Result<bool> {
         use Action::*;
         if self.tab == Tab::Directories && self.act_dirs(&action)? {
+            return Ok(true);
+        }
+        if self.tab == Tab::Search && self.act_search(&action)? {
             return Ok(true);
         }
         let s = &self.status;
@@ -593,6 +627,10 @@ impl<'nc> App<'nc> {
 
     fn set_tab(&mut self, tab: Tab) -> Result<()> {
         self.tab = tab;
+        // Arriving at an empty search: start typing straight away.
+        if tab == Tab::Search && self.search.is_empty_query() {
+            self.search.editing = true;
+        }
         if tab == Tab::Directories && !self.browser.is_open() {
             self.browser.open_root(&mut self.conn)?;
         }
@@ -678,8 +716,88 @@ impl<'nc> App<'nc> {
         }
         // Insert positions are relative to the real order.
         self.restore()?;
-        let n = enqueue::enqueue(&mut self.conn, &items, at)?;
+        let n = enqueue::enqueue(&mut self.conn, &items, at)?.len();
         self.browser.marked.clear();
+        let verb = if at == Where::Next { "playing next" } else { "queued" };
+        self.say(format!("{verb}: {n} song{}", if n == 1 { "" } else { "s" }));
+        Ok(())
+    }
+
+    /// Search-tab actions on the results. Returns false for ones it
+    /// doesn't handle.
+    fn act_search(&mut self, action: &Action) -> Result<bool> {
+        use Action::*;
+        let page = self.list_height.max(2) as isize;
+        let r = &mut self.search.results;
+        match action {
+            Up => r.move_sel(-1),
+            Down => r.move_sel(1),
+            UpHalf => r.move_sel(-page / 2),
+            DownHalf => r.move_sel(page / 2),
+            PageUp => r.move_sel(-page),
+            PageDown => r.move_sel(page),
+            Top => r.sel = 0,
+            Bottom => r.sel = r.rows.len().saturating_sub(1),
+            Left => match r.selected() {
+                Some(Row::Group(g)) => r.set_collapsed(g, true),
+                Some(Row::Song(q)) => {
+                    let g = r.group_of_song(q);
+                    r.set_collapsed(g, true);
+                }
+                None => {}
+            },
+            Right => {
+                if let Some(Row::Group(g)) = r.selected() {
+                    r.set_collapsed(g, false);
+                }
+            }
+            FocusInput | EnterSearch => self.search.editing = true,
+            Close if r.marked.is_empty() => self.search.editing = true,
+            Close => r.marked.clear(),
+            Select => {
+                let ids: Vec<u32> = r.selected_songs().iter().filter_map(|&q| r.songs[q].id).collect();
+                let all = ids.iter().all(|id| r.marked.contains(id));
+                for id in ids {
+                    if all {
+                        r.marked.remove(&id);
+                    } else {
+                        r.marked.insert(id);
+                    }
+                }
+                r.move_sel(1);
+            }
+            InvertSelection => r.marked = r.songs.iter().filter_map(|s| s.id).filter(|id| !r.marked.contains(id)).collect(),
+            Add => self.queue_results(false, Where::End, false)?,
+            AddAll => self.queue_results(true, Where::End, false)?,
+            PlayNext => self.queue_results(false, Where::Next, false)?,
+            Confirm => self.queue_results(false, Where::End, true)?,
+            _ => return Ok(false),
+        }
+        Ok(true)
+    }
+
+    /// Queues search results: the marked songs or what's under the cursor
+    /// (`all`: every result), optionally playing the first right away.
+    fn queue_results(&mut self, all: bool, at: Where, play: bool) -> Result<()> {
+        let r = &self.search.results;
+        let picked: Vec<usize> = if all {
+            r.order.clone()
+        } else if !r.marked.is_empty() {
+            r.order.iter().copied().filter(|&q| r.songs[q].id.is_some_and(|id| r.marked.contains(&id))).collect()
+        } else {
+            r.selected_songs()
+        };
+        let items: Vec<Item> = picked.iter().map(|&q| vec![r.songs[q].file.clone()]).collect();
+        if items.is_empty() {
+            return Ok(());
+        }
+        self.restore()?;
+        let ids = enqueue::enqueue(&mut self.conn, &items, at)?;
+        if play && let Some(id) = ids.first() {
+            self.mpd(&format!("playid {id}"))?;
+        }
+        self.search.results.marked.clear();
+        let n = ids.len();
         let verb = if at == Where::Next { "playing next" } else { "queued" };
         self.say(format!("{verb}: {n} song{}", if n == 1 { "" } else { "s" }));
         Ok(())
@@ -712,6 +830,28 @@ impl<'nc> App<'nc> {
                     self.act_dirs(&Action::Confirm)?;
                 }
             }
+            _ if (wheel_up || wheel_down) && self.tab == Tab::Search => {
+                self.search.results.move_sel(if wheel_up { -WHEEL_ROWS } else { WHEEL_ROWS });
+            }
+            Some((_, Target::SearchInput)) if m.button == 1 => self.search.editing = true,
+            Some((_, t @ Target::Row(List::Search, row))) if m.button == 1 => {
+                let r = &mut self.search.results;
+                if let Some(i) = r.rows.iter().position(|&x| x == row) {
+                    r.sel = i;
+                }
+                self.search.editing = false;
+                if double(t, self.last_click) {
+                    self.last_click = None;
+                    self.queue_results(false, Where::End, true)?;
+                } else {
+                    self.last_click = Some((Instant::now(), t));
+                }
+            }
+            Some((_, Target::Caret(List::Search, g))) if m.button == 1 => {
+                let r = &mut self.search.results;
+                let collapse = !r.collapsed.contains(&r.groups[g].key);
+                r.set_collapsed(g, collapse);
+            }
             _ if (wheel_up || wheel_down) && self.tab == Tab::Queue => {
                 self.queue.move_sel(if wheel_up { -WHEEL_ROWS } else { WHEEL_ROWS });
             }
@@ -734,11 +874,11 @@ impl<'nc> App<'nc> {
                 };
                 self.act(a)?;
             }
-            Some((_, Target::Caret(g))) => {
+            Some((_, Target::Caret(List::Queue, g))) => {
                 let collapse = !self.queue.collapsed.contains(&self.queue.groups[g].key);
                 self.queue.set_collapsed(g, collapse);
             }
-            Some((_, t @ Target::Row(row))) => {
+            Some((_, t @ Target::Row(List::Queue, row))) => {
                 if let Some(r) = self.queue.rows.iter().position(|&x| x == row) {
                     self.queue.sel = r;
                 }

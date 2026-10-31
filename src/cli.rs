@@ -48,7 +48,7 @@ pub fn run(at: Where, paths: &[String]) -> Result<()> {
             rel.map(str::to_owned).into_iter().chain([format!("file://{}", f.display())]).collect()
         })
         .collect();
-    let n = enqueue(&mut conn, &items, at)?;
+    let n = enqueue(&mut conn, &items, at)?.len();
     eprintln!("notmpc: queued {n} song{}", if n == 1 { "" } else { "s" });
     Ok(())
 }

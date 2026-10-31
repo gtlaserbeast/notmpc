@@ -29,6 +29,9 @@ pub struct Group {
     pub various: bool,
     /// Id of the first song: identifies the group across refreshes.
     pub key: u32,
+    /// Another group in the list has the same album and artist (show the
+    /// folder to tell them apart).
+    pub ambiguous: bool,
 }
 
 /// A song shown away from its MPD position: `id` belongs right after
@@ -120,7 +123,7 @@ impl Queue {
             let m = &self.metas[q];
             let joins = self.groups.last().is_some_and(|g| {
                 let first = &self.metas[self.order[g.start]];
-                self.grouping && first.album == m.album && first.album_artist == m.album_artist
+                self.grouping && first.album == m.album && first.album_artist == m.album_artist && first.dir == m.dir
             });
             if joins {
                 let g = self.groups.last_mut().unwrap();
@@ -134,9 +137,26 @@ impl Queue {
                     total: self.songs[q].duration,
                     various: false,
                     key: self.songs[q].id.unwrap_or(u32::MAX),
+                    ambiguous: false,
                 });
             }
             self.group_of.push(self.groups.len() - 1);
+        }
+        let mut seen: std::collections::HashMap<(&str, &str), usize> = std::collections::HashMap::new();
+        for g in &self.groups {
+            let m = &self.metas[self.order[g.start]];
+            *seen.entry((m.album.as_str(), m.album_artist.as_str())).or_default() += 1;
+        }
+        let ambiguous: Vec<bool> = self
+            .groups
+            .iter()
+            .map(|g| {
+                let m = &self.metas[self.order[g.start]];
+                seen[&(m.album.as_str(), m.album_artist.as_str())] > 1
+            })
+            .collect();
+        for (g, a) in self.groups.iter_mut().zip(ambiguous) {
+            g.ambiguous = a;
         }
     }
 

@@ -18,25 +18,24 @@ pub enum Where {
 /// One song to queue: URIs tried in order (a database URI, then `file://`).
 pub type Item = Vec<String>;
 
-/// Queues `items` and returns how many were added.
-pub fn enqueue(conn: &mut Conn, items: &[Item], at: Where) -> Result<usize> {
+/// Queues `items`; returns their queue ids.
+pub fn enqueue(conn: &mut Conn, items: &[Item], at: Where) -> Result<Vec<u32>> {
     let status = Status::parse(&conn.command("status")?);
     let insert_at = match at {
         Where::End => None,
         Where::Next => Some(status.song_pos.map_or(0, |p| p + 1)),
     };
-    let mut first_id = None;
+    let mut ids = Vec::new();
     for (i, item) in items.iter().enumerate() {
         let pos = insert_at.map(|p| format!(" {}", p + i)).unwrap_or_default();
-        let id = add_one(conn, item, &pos)?;
-        first_id = first_id.or(id);
+        ids.extend(add_one(conn, item, &pos)?);
     }
     if status.state != State::Play
-        && let Some(id) = first_id
+        && let Some(id) = ids.first()
     {
         conn.command(&format!("playid {id}"))?;
     }
-    Ok(items.len())
+    Ok(ids)
 }
 
 /// Adds the first URI of `item` MPD accepts; returns its queue id.

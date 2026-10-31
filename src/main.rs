@@ -9,6 +9,7 @@ mod meta;
 mod mpd;
 mod nc;
 mod queue;
+mod search;
 mod ui;
 mod viz;
 
