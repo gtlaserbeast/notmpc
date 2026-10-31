@@ -98,13 +98,16 @@ fn main() -> Result<()> {
             full = true;
         }
         let clock = app.clock();
-        if full || clock != shown {
+        let dirty = if full || clock != shown {
             app.draw()?;
             shown = clock;
+            true
         } else {
-            app.draw_viz_only();
+            app.draw_viz_only()
+        };
+        if dirty {
+            nc.render()?;
         }
-        nc.render()?;
 
         let input = nc.get(app.frame_interval())?;
         full = input.is_some();

@@ -146,6 +146,8 @@ pub struct App<'nc> {
     /// The spectrum's plane and the header's above it; see `layer_header`.
     pub(crate) header_plane: Option<OwnedPlane<'nc>>,
     pub(crate) viz_plane: Option<OwnedPlane<'nc>>,
+    /// Each column's (eighths lit, brightness step) as last drawn.
+    pub(crate) viz_shown: Vec<(u32, u8)>,
 }
 
 impl<'nc> App<'nc> {
@@ -182,6 +184,7 @@ impl<'nc> App<'nc> {
             viz_on: false,
             header_plane: None,
             viz_plane: None,
+            viz_shown: Vec::new(),
         };
         if app.cfg.visualizer {
             app.viz = Some(Visualizer::new(app.cfg.visualizer_fifo.clone(), app.cfg.visualizer_delay()));

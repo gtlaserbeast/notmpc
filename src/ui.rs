@@ -122,7 +122,7 @@ impl App<'_> {
 
         let pixel_bar = self.pixel_bar.is_some();
         self.layer_header(cols)?;
-        self.draw_viz(cols);
+        self.draw_viz(cols, true);
         let mut hp = self.header_plane.take().expect("created above");
         hp.erase();
         self.draw_header(&mut hp, cols);
@@ -185,50 +185,59 @@ impl App<'_> {
     /// blocks; full cells are drawn as background so text over them keeps
     /// the colour. Each bar is one colour: the palette's gradient across the
     /// spectrum, brighter the taller it is (no banding between rows).
-    fn draw_viz(&mut self, cols: u32) {
+    /// Unless `force`, leaves the plane alone (and returns false) when the
+    /// frame would look the same as the last.
+    fn draw_viz(&mut self, cols: u32, force: bool) -> bool {
         const PARTIAL: [&str; 8] = [" ", "▁", "▂", "▃", "▄", "▅", "▆", "▇"];
-        let Some(mut vp) = self.viz_plane.take() else { return };
-        vp.erase();
+        let Some(mut vp) = self.viz_plane.take() else { return false };
         let rows = vp.dim_yx().0;
-        let stops = self.cfg.theme.visualizer_colors.clone();
-        if let Some(viz) = self.viz.as_mut().filter(|_| self.offline.is_none() && self.viz_on) {
-            let bars = viz.frame(cols as usize);
-            for (x, &b) in bars.iter().enumerate() {
-                let eighths = (b * (rows * 8) as f32).round() as u32;
-                if eighths == 0 {
-                    continue;
+        // (eighths lit, brightness step) per column: all a frame shows
+        let cells: Vec<(u32, u8)> = match self.viz.as_mut().filter(|_| self.offline.is_none() && self.viz_on) {
+            // brightness in four steps, so a lit cell's colour changes (and
+            // is re-sent) only when its bar crosses one
+            Some(viz) => viz.frame(cols as usize).iter().map(|&b| ((b * (rows * 8) as f32).round() as u32, (b * 4.0).round() as u8)).collect(),
+            None => Vec::new(),
+        };
+        if !force && cells == self.viz_shown {
+            self.viz_plane = Some(vp);
+            return false;
+        }
+        vp.erase();
+        let stops = &self.cfg.theme.visualizer_colors;
+        for (x, &(eighths, level)) in cells.iter().enumerate() {
+            if eighths == 0 {
+                continue;
+            }
+            // Dim enough for the header text on top to stay readable.
+            let c = Color::Rgb(scale(gradient(stops, x as f32 / (cols.max(2) - 1) as f32), 0.30 + 0.10 * f32::from(level)));
+            for r in 0..rows {
+                let filled = eighths.saturating_sub(r * 8).min(8);
+                if filled == 0 {
+                    break;
                 }
-                // Dim enough for the header text on top to stay readable;
-                // in four steps, so a lit cell's colour changes (and is
-                // re-sent) only when its bar crosses one.
-                let level = (b * 4.0).round() / 4.0;
-                let c = Color::Rgb(scale(gradient(&stops, x as f32 / (cols.max(2) - 1) as f32), 0.30 + 0.40 * level));
-                for r in 0..rows {
-                    let filled = eighths.saturating_sub(r * 8).min(8);
-                    if filled == 0 {
-                        break;
-                    }
-                    let y = rows - 1 - r;
-                    vp.set_fg(c);
-                    if filled == 8 {
-                        vp.set_bg(c);
-                        vp.putstr_yx(y, x as u32, " ");
-                    } else {
-                        vp.set_bg(Color::Default);
-                        vp.set_bg_transparent();
-                        vp.putstr_yx(y, x as u32, PARTIAL[filled as usize]);
-                    }
+                let y = rows - 1 - r;
+                vp.set_fg(c);
+                if filled == 8 {
+                    vp.set_bg(c);
+                    vp.putstr_yx(y, x as u32, " ");
+                } else {
+                    vp.set_bg(Color::Default);
+                    vp.set_bg_transparent();
+                    vp.putstr_yx(y, x as u32, PARTIAL[filled as usize]);
                 }
             }
         }
+        self.viz_shown = cells;
         self.viz_plane = Some(vp);
+        true
     }
 
     /// Just the next visualizer frame, for when nothing else on screen
-    /// has changed since the last `draw`.
-    pub fn draw_viz_only(&mut self) {
-        if let Some(cols) = self.viz_plane.as_ref().map(|p| p.dim_yx().1) {
-            self.draw_viz(cols);
+    /// has changed since the last `draw`; false if it looks the same.
+    pub fn draw_viz_only(&mut self) -> bool {
+        match self.viz_plane.as_ref().map(|p| p.dim_yx().1) {
+            Some(cols) => self.draw_viz(cols, false),
+            None => false,
         }
     }
 
