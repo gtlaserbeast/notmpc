@@ -208,10 +208,27 @@ impl<'nc> App<'nc> {
 
     /// Called every loop iteration.
     pub fn tick(&mut self) -> Result<()> {
+        if self.is_playing() && self.fetched_at.elapsed() >= self.cfg.status_interval {
+            self.poll_status()?;
+        }
         if self.moved_at.is_some_and(|t| t.elapsed() >= FOLLOW_DELAY) {
             self.moved_at = None;
             self.retarget()?;
         }
+        Ok(())
+    }
+
+    /// MPD announces song and state changes but not the bitrate, which
+    /// varies as it plays (like rmpc, poll it). Only same-song fields are
+    /// taken: song changes go through `update` so following sees them.
+    fn poll_status(&mut self) -> Result<()> {
+        let new = Status::parse(&self.conn.command("status")?);
+        if new.song_id == self.status.song_id && new.state == self.status.state {
+            self.status.bitrate = new.bitrate;
+            self.status.audio = new.audio;
+            self.status.elapsed = new.elapsed;
+        }
+        self.fetched_at = Instant::now();
         Ok(())
     }
 

@@ -6,6 +6,8 @@ volume_step = 5
 seek_step = 5         # seconds
 art_width = 45        # % of the queue tab given to album art
 group_by_album = true # false = rmpc's flat Artist/Title/Album/Date table
+follow_cursor = true  # the song under the queue cursor plays next (F toggles)
+status_update_interval_ms = 1000  # bitrate / position refresh while playing
 
 # Keys use rmpc notation: "p", "G", "<C-k>", "<S-Tab>", "<CR>", "<Space>".
 # Actions use rmpc names. Bindings here are added on top of the defaults;

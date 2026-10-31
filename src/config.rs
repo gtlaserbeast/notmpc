@@ -5,6 +5,7 @@ use std::collections::HashMap;
 use std::env;
 use std::fs;
 use std::path::PathBuf;
+use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
@@ -105,6 +106,8 @@ pub struct Config {
     pub group_by_album: bool,
     /// Playback follows the queue cursor (toggle with ToggleFollow).
     pub follow_cursor: bool,
+    /// How often to refresh bitrate and position while playing.
+    pub status_interval: Duration,
     pub keys: Keymap,
     pub theme: Theme,
 }
@@ -117,6 +120,7 @@ impl Default for Config {
             art_width: 45,
             group_by_album: true,
             follow_cursor: true,
+            status_interval: Duration::from_millis(1000),
             keys: Keymap::defaults(),
             theme: Theme::default(),
         }
@@ -131,6 +135,7 @@ struct File {
     art_width: Option<u32>,
     group_by_album: Option<bool>,
     follow_cursor: Option<bool>,
+    status_update_interval_ms: Option<u64>,
     keys: HashMap<String, HashMap<String, String>>,
     theme: HashMap<String, ThemeEntry>,
 }
@@ -184,6 +189,9 @@ impl Config {
         }
         if let Some(v) = file.follow_cursor {
             cfg.follow_cursor = v;
+        }
+        if let Some(v) = file.status_update_interval_ms {
+            cfg.status_interval = Duration::from_millis(v.max(100));
         }
         for (section, entries) in &file.keys {
             cfg.keys.merge(section, entries).with_context(|| path.display().to_string())?;
