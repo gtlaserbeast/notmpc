@@ -168,6 +168,40 @@ impl Nc {
         unsafe { sys::notcurses_mice_enable(self.raw, sys::NCMICE_BUTTON_EVENT) };
     }
 
+    /// A cell's size in pixels (height, width), when the terminal says.
+    pub fn cell_px(&self) -> Option<(u32, u32)> {
+        let (mut cy, mut cx) = (0, 0);
+        // SAFETY: the standard plane is live; null out-params are allowed.
+        unsafe {
+            sys::ncplane_pixel_geom(
+                self.stdplane().raw,
+                ptr::null_mut(),
+                ptr::null_mut(),
+                &mut cy,
+                &mut cx,
+                ptr::null_mut(),
+                ptr::null_mut(),
+            )
+        };
+        (cy > 0 && cx > 0).then_some((cy, cx))
+    }
+
+    /// Draws `v` onto `plane` itself, pixel for pixel (no scaling); a
+    /// later blit onto the same plane replaces it.
+    pub fn blit_onto(&self, v: &Visual, plane: &mut Plane, pixel: bool) -> Result<()> {
+        let opts = sys::ncvisual_options {
+            n: plane.raw,
+            scaling: sys::ncscale_e_NCSCALE_NONE,
+            blitter: if pixel { sys::ncblitter_e_NCBLIT_PIXEL } else { sys::ncblitter_e_NCBLIT_2x1 },
+            ..Default::default()
+        };
+        // SAFETY: raw, v and plane are live; opts is valid for the call.
+        if unsafe { sys::ncvisual_blit(self.raw, v.raw, &opts) }.is_null() {
+            bail!("ncvisual_blit failed");
+        }
+        Ok(())
+    }
+
     /// Whether the terminal supports pixel graphics (kitty, sixel, ...).
     pub fn can_pixel(&self) -> bool {
         // SAFETY: raw is a live notcurses context.
@@ -395,6 +429,38 @@ impl Visual {
 }
 
 impl Visual {
+    /// An image from RGBA bytes, `h` rows of `w` pixels.
+    pub fn from_rgba(rgba: &[u8], h: u32, w: u32) -> Result<Self> {
+        assert_eq!(rgba.len(), (h * w * 4) as usize);
+        // SAFETY: rgba holds h rows of w*4 bytes; notcurses copies it.
+        let raw = unsafe { sys::ncvisual_from_rgba(rgba.as_ptr().cast(), h as i32, (w * 4) as i32, w as i32) };
+        if raw.is_null() {
+            bail!("ncvisual_from_rgba failed");
+        }
+        Ok(Self { raw })
+    }
+
+    /// The average colour of a coarse grid of pixels (0xRRGGBB).
+    pub fn average_rgb(&self) -> Option<u32> {
+        let (h, w) = self.size()?;
+        let (mut r, mut g, mut b, mut n) = (0u64, 0u64, 0u64, 0u64);
+        for gy in 0..16 {
+            for gx in 0..16 {
+                let mut px = 0u32;
+                let (y, x) = (gy * h / 16, gx * w / 16);
+                // SAFETY: raw is live; (y, x) is inside the image.
+                if unsafe { sys::ncvisual_at_yx(self.raw, y, x, &mut px) } == 0 {
+                    // notcurses pixels are RGBA in memory order (little-endian ABGR)
+                    r += u64::from(px & 0xff);
+                    g += u64::from((px >> 8) & 0xff);
+                    b += u64::from((px >> 16) & 0xff);
+                    n += 1;
+                }
+            }
+        }
+        (n > 0).then(|| (((r / n) << 16) | ((g / n) << 8) | (b / n)) as u32)
+    }
+
     /// Pixel size (height, width).
     pub fn size(&self) -> Option<(u32, u32)> {
         let mut g = sys::ncvgeom::default();

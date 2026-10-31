@@ -14,6 +14,8 @@ mod scrobble;
 mod search;
 mod ui;
 mod viz;
+mod wavebar;
+mod waveform;
 
 use std::sync::mpsc::{self, Receiver};
 use std::thread;
