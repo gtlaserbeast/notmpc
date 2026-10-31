@@ -35,6 +35,25 @@ Mouse: click to select, double-click to open / play, click the left column
 to go up, click an entry in the preview to open its folder. Adding starts
 playback on the first new song if nothing is playing.
 
+## Visualizer
+
+A spectrum (one bar per column, 40 Hz–16 kHz, log-spaced) fills the
+background of the header and progress bar; the text is drawn on a
+transparent plane above it. It needs MPD's `fifo` output:
+
+    audio_output {
+            type    "fifo"
+            name    "notmpc visualizer"
+            path    "/run/user/1000/mpd/visualizer.fifo"
+            format  "44100:16:2"
+    }
+
+notmpc reads `$XDG_RUNTIME_DIR/mpd/visualizer.fifo` by default
+(`visualizer_fifo`), at 30 fps (`visualizer_fps`), over 3 rows
+(`visualizer_rows`). It idles when nothing plays. Colours:
+`visualizer_low` / `visualizer_high` in `[theme]` (keep them dim; text sits
+on them). Cost measured at 190×45: ~1% of a core, ~21 KiB/s to the terminal.
+
 ## Queueing from a file manager
 
     notmpc add PATH...      # append files / directory trees
@@ -134,6 +153,14 @@ in italics.
 
 ## Roadmap
 
-1. Spectrum visualizer behind the header, from MPD's FIFO output
-2. Search tab
-3. Waveform seek bar
+1. Search tab
+2. Overlays: help (`?`), song info (`oI`), outputs (`oo`), decoders (`op`)
+3. Scrobble badge in the header from mpdscribble: dim when it isn't
+   subscribed to MPD's `mpdscribble` channel, ✓ once the current track
+   scrobbled, a warning with the journal's backlog count; plus a love key
+   (`sendmessage mpdscribble love`). Per-track status needs mpdscribble to
+   log to a file notmpc can read.
+4. A collapse-all / expand-all button on the queue (the keys are `H` / `L`)
+5. Waveform seek bar: the track's loudness envelope as a 2-row pixel strip,
+   played part in an orange gradient (tinted from the cover), with a 2-row
+   pixel-art rider bobbing along the contour: an Omnium Cargo bike

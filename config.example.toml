@@ -8,6 +8,10 @@ art_width = 45        # % of the queue tab given to album art
 group_by_album = true # false = rmpc's flat Artist/Title/Album/Date table
 follow_cursor = true  # the song under the queue cursor plays next (F toggles)
 status_update_interval_ms = 1000  # bitrate / position refresh while playing
+visualizer = true     # spectrum behind the header (needs MPD's fifo output)
+# visualizer_fifo = "/run/user/1000/mpd/visualizer.fifo"
+visualizer_rows = 3   # 1-3
+visualizer_fps = 30
 
 # Keys use rmpc notation: "p", "G", "<C-k>", "<S-Tab>", "<CR>", "<Space>".
 # Actions use rmpc names. Bindings here are added on top of the defaults;
@@ -30,5 +34,8 @@ status_update_interval_ms = 1000  # bitrate / position refresh while playing
 # cursor = { fg = "black", bg = "#dd6f00", bold = true }
 # current = { fg = "#dd6f00", bold = true }
 # progress_thumb = "#a7ff04"
+# album_artist = "cyan"
+# visualizer_low = "#4a2600"
+# visualizer_high = "#3f5c00"
 # start cap, elapsed, thumb, remaining, end cap:
 # progress_symbols = ["", "─", "\U000f189c", " ", ""]

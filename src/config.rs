@@ -67,6 +67,11 @@ pub struct Theme {
     pub progress_symbols: [String; 5],
     /// Field names in the Directories preview.
     pub label: Style,
+    /// Album artist on queue album headers.
+    pub album_artist: Style,
+    /// Spectrum colours, bottom to top (dim: the header text sits on them).
+    pub visualizer_low: Style,
+    pub visualizer_high: Style,
     pub dir_symbol: String,
     pub song_symbol: String,
 }
@@ -103,6 +108,9 @@ impl Default for Theme {
             progress_track: Style::fg(ORANGE),
             progress_symbols: ["\u{e0b7}", "─", "\u{f189c}", " ", "\u{e0b5}"].map(String::from),
             label: Style::fg(YELLOW),
+            album_artist: Style::fg(Color::Palette(6)),
+            visualizer_low: Style::fg(Color::Rgb(0x4a2600)),
+            visualizer_high: Style::fg(Color::Rgb(0x3f5c00)),
             dir_symbol: "🖿".into(),
             song_symbol: "🕪".into(),
         }
@@ -120,6 +128,12 @@ pub struct Config {
     pub follow_cursor: bool,
     /// How often to refresh bitrate and position while playing.
     pub status_interval: Duration,
+    /// Spectrum behind the header, fed by MPD's `fifo` output.
+    pub visualizer: bool,
+    pub visualizer_fifo: PathBuf,
+    /// Header rows it fills (the header is 2 rows, plus the progress bar).
+    pub visualizer_rows: u32,
+    pub visualizer_fps: u32,
     pub keys: Keymap,
     pub theme: Theme,
 }
@@ -133,6 +147,12 @@ impl Default for Config {
             group_by_album: true,
             follow_cursor: true,
             status_interval: Duration::from_millis(1000),
+            visualizer: true,
+            visualizer_fifo: env::var_os("XDG_RUNTIME_DIR")
+                .map_or_else(|| PathBuf::from("/tmp"), PathBuf::from)
+                .join("mpd/visualizer.fifo"),
+            visualizer_rows: 3,
+            visualizer_fps: 30,
             keys: Keymap::defaults(),
             theme: Theme::default(),
         }
@@ -148,6 +168,10 @@ struct File {
     group_by_album: Option<bool>,
     follow_cursor: Option<bool>,
     status_update_interval_ms: Option<u64>,
+    visualizer: Option<bool>,
+    visualizer_fifo: Option<String>,
+    visualizer_rows: Option<u32>,
+    visualizer_fps: Option<u32>,
     keys: HashMap<String, HashMap<String, String>>,
     theme: HashMap<String, ThemeEntry>,
 }
@@ -205,6 +229,18 @@ impl Config {
         if let Some(v) = file.status_update_interval_ms {
             cfg.status_interval = Duration::from_millis(v.max(100));
         }
+        if let Some(v) = file.visualizer {
+            cfg.visualizer = v;
+        }
+        if let Some(v) = file.visualizer_fifo {
+            cfg.visualizer_fifo = PathBuf::from(v);
+        }
+        if let Some(v) = file.visualizer_rows {
+            cfg.visualizer_rows = v.clamp(1, 3);
+        }
+        if let Some(v) = file.visualizer_fps {
+            cfg.visualizer_fps = v.clamp(5, 60);
+        }
         for (section, entries) in &file.keys {
             cfg.keys.merge(section, entries).with_context(|| path.display().to_string())?;
         }
@@ -248,6 +284,9 @@ impl Theme {
             "progress_thumb" => &mut self.progress_thumb,
             "progress_track" => &mut self.progress_track,
             "label" => &mut self.label,
+            "album_artist" => &mut self.album_artist,
+            "visualizer_low" => &mut self.visualizer_low,
+            "visualizer_high" => &mut self.visualizer_high,
             _ => bail!("unknown theme entry"),
         };
         *slot = match entry {

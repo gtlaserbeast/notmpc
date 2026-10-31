@@ -112,6 +112,10 @@ impl Input {
 
 pub struct Nc {
     raw: *mut sys::notcurses,
+    /// The terminal's default foreground. Glyphs in the "default" colour
+    /// are see-through when composited over another plane, so planes draw
+    /// default-coloured text in this instead.
+    default_fg: Color,
 }
 
 impl Nc {
@@ -125,13 +129,20 @@ impl Nc {
         if raw.is_null() {
             bail!("notcurses_init failed");
         }
-        Ok(Self { raw })
+        let mut rgb = 0;
+        // SAFETY: raw is live; rgb is a valid out-param.
+        let default_fg = if unsafe { sys::notcurses_default_foreground(raw, &mut rgb) } == 0 {
+            Color::Rgb(rgb)
+        } else {
+            Color::Palette(7)
+        };
+        Ok(Self { raw, default_fg })
     }
 
     pub fn stdplane(&self) -> Plane<'_> {
         // SAFETY: raw is a live notcurses context; the plane is owned by it.
         let raw = unsafe { sys::notcurses_stdplane(self.raw) };
-        Plane { raw, _nc: PhantomData }
+        Plane { raw, default_fg: self.default_fg, _nc: PhantomData }
     }
 
     /// Creates a plane at (y, x) relative to the standard plane.
@@ -148,7 +159,7 @@ impl Nc {
         if raw.is_null() {
             bail!("ncplane_create failed");
         }
-        Ok(OwnedPlane(Plane { raw, _nc: PhantomData }))
+        Ok(OwnedPlane(Plane { raw, default_fg: self.default_fg, _nc: PhantomData }))
     }
 
     /// Reports button presses and the wheel as [`Event::Mouse`].
@@ -181,7 +192,7 @@ impl Nc {
         if raw.is_null() {
             bail!("ncvisual_blit failed");
         }
-        Ok(OwnedPlane(Plane { raw, _nc: PhantomData }))
+        Ok(OwnedPlane(Plane { raw, default_fg: self.default_fg, _nc: PhantomData }))
     }
 
     pub fn render(&self) -> Result<()> {
@@ -248,6 +259,7 @@ impl Drop for Nc {
 /// A plane borrowed from its notcurses context.
 pub struct Plane<'a> {
     raw: *mut sys::ncplane,
+    default_fg: Color,
     _nc: PhantomData<&'a Nc>,
 }
 
@@ -265,9 +277,14 @@ impl Plane<'_> {
         unsafe { sys::ncplane_erase(self.raw) };
     }
 
+    /// Sets an opaque foreground; `Default` means the terminal's actual
+    /// default colour (see `Nc::default_fg`). Setting a colour alone keeps
+    /// the alpha, and `erase` resets it to the base cell's.
     pub fn set_fg(&mut self, c: Color) {
         // SAFETY: raw is a live plane.
         unsafe {
+            sys::ncplane_set_fg_alpha(self.raw, sys::NCALPHA_OPAQUE as i32);
+            let c = if c == Color::Default { self.default_fg } else { c };
             match c {
                 Color::Default => sys::ncplane_set_fg_default(self.raw),
                 Color::Rgb(rgb) => _ = sys::ncplane_set_fg_rgb(self.raw, rgb),
@@ -276,15 +293,37 @@ impl Plane<'_> {
         }
     }
 
+    /// Sets an opaque background (see `set_fg`).
     pub fn set_bg(&mut self, c: Color) {
         // SAFETY: raw is a live plane.
         unsafe {
+            sys::ncplane_set_bg_alpha(self.raw, sys::NCALPHA_OPAQUE as i32);
             match c {
                 Color::Default => sys::ncplane_set_bg_default(self.raw),
                 Color::Rgb(rgb) => _ = sys::ncplane_set_bg_rgb(self.raw, rgb),
                 Color::Palette(i) => _ = sys::ncplane_set_bg_palindex(self.raw, i.into()),
             }
         }
+    }
+
+    /// Raises the plane above every other.
+    pub fn move_top(&mut self) {
+        // SAFETY: raw is a live plane.
+        unsafe { sys::ncplane_move_top(self.raw) };
+    }
+
+    /// Makes the plane see-through wherever nothing is drawn, so planes
+    /// below show (glyph and background).
+    pub fn set_base_transparent(&mut self) {
+        const T: u64 = sys::NCALPHA_TRANSPARENT as u64;
+        // SAFETY: raw is a live plane; the EGC is a valid empty C string.
+        unsafe { sys::ncplane_set_base(self.raw, c"".as_ptr(), 0, (T << 32) | T) };
+    }
+
+    /// Text drawn next keeps whatever background the planes below have.
+    pub fn set_bg_transparent(&mut self) {
+        // SAFETY: raw is a live plane.
+        unsafe { sys::ncplane_set_bg_alpha(self.raw, sys::NCALPHA_TRANSPARENT as i32) };
     }
 
     pub fn set_styles(&mut self, styles: u32) {

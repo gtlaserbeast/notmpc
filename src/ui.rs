@@ -30,6 +30,10 @@ const MIN_ART_COLS: u32 = 80;
 fn apply(p: &mut Plane, s: Style) {
     p.set_fg(s.fg);
     p.set_bg(s.bg);
+    // Over the header's spectrum, unstyled text keeps the bars behind it.
+    if s.bg == Color::Default {
+        p.set_bg_transparent();
+    }
     p.set_styles(if s.bold { BOLD } else { 0 } | if s.italic { ITALIC } else { 0 });
 }
 
@@ -107,13 +111,32 @@ impl App<'_> {
         let (rows, cols) = p.dim_yx();
         if rows < HEADER_ROWS + FOOTER_ROWS + 3 || cols < 40 {
             self.art.show(None)?;
+            self.header_plane = None;
+            self.viz_plane = None;
             reset(&mut p);
             p.putstr_yx(0, 0, "terminal too small");
             return Ok(());
         }
 
-        self.draw_header(&mut p, cols);
-        self.draw_progress(&mut p, 2, cols);
+        // Header and progress bar on their own transparent plane, above the
+        // spectrum's (see `App::header_plane`).
+        if self.header_plane.as_ref().is_none_or(|h| h.dim_yx() != (3, cols)) {
+            self.header_plane = None;
+            self.viz_plane = None;
+            self.viz_plane = Some(nc.new_plane(0, 0, self.cfg.visualizer_rows, cols)?);
+            let mut h = nc.new_plane(0, 0, 3, cols)?;
+            h.set_base_transparent();
+            h.move_top();
+            self.header_plane = Some(h);
+        }
+        self.draw_viz(cols);
+        let mut hp = self.header_plane.take().expect("created above");
+        hp.erase();
+        self.draw_header(&mut hp, cols);
+        self.draw_progress(&mut hp, 2, cols);
+        reset(&mut hp);
+        self.header_plane = Some(hp);
+
         self.draw_tabs(&mut p, 3, cols);
         let body = Rect { y: HEADER_ROWS, x: 0, rows: rows - HEADER_ROWS - FOOTER_ROWS, cols };
         if self.tab != Tab::Directories {
@@ -134,6 +157,42 @@ impl App<'_> {
         self.draw_footer(&mut p, rows - 1, cols);
         reset(&mut p);
         Ok(())
+    }
+
+    /// One bar per column, rising from the bottom of the header in eighth
+    /// blocks; full cells are drawn as background so text over them keeps
+    /// the colour.
+    fn draw_viz(&mut self, cols: u32) {
+        const PARTIAL: [&str; 8] = [" ", "▁", "▂", "▃", "▄", "▅", "▆", "▇"];
+        let Some(mut vp) = self.viz_plane.take() else { return };
+        vp.erase();
+        let rows = self.cfg.visualizer_rows;
+        let (lo, hi) = (self.cfg.theme.visualizer_low.fg, self.cfg.theme.visualizer_high.fg);
+        if let Some(viz) = self.viz.as_mut().filter(|_| self.offline.is_none()) {
+            let bars = viz.frame(cols as usize);
+            for (x, &b) in bars.iter().enumerate() {
+                let eighths = (b * (rows * 8) as f32).round() as u32;
+                for r in 0..rows {
+                    let filled = eighths.saturating_sub(r * 8).min(8);
+                    if filled == 0 {
+                        break;
+                    }
+                    let c = lerp_color(lo, hi, (r as f32 + 0.5) / rows as f32);
+                    let y = rows - 1 - r;
+                    if filled == 8 {
+                        vp.set_fg(c);
+                        vp.set_bg(c);
+                        vp.putstr_yx(y, x as u32, " ");
+                    } else {
+                        vp.set_fg(c);
+                        vp.set_bg(Color::Default);
+                        vp.set_bg_transparent();
+                        vp.putstr_yx(y, x as u32, PARTIAL[filled as usize]);
+                    }
+                }
+            }
+        }
+        self.viz_plane = Some(vp);
     }
 
     fn hit(&self, y: u32, x: u32, w: u32, target: Target) {
@@ -256,7 +315,11 @@ impl App<'_> {
         if self.status.state != State::Stop {
             x = put(p, y, x, thumb, t.progress_thumb);
         }
-        put(p, y, x, &repeat(track, (ws + inner).saturating_sub(x)), t.progress_track);
+        // A blank remaining-track symbol leaves the cells empty so the
+        // spectrum behind shows through.
+        if !track.trim().is_empty() {
+            put(p, y, x, &repeat(track, (ws + inner).saturating_sub(x)), t.progress_track);
+        }
         put(p, y, ws + inner, end, t.progress_track);
     }
 
@@ -391,7 +454,8 @@ impl App<'_> {
         }
         let artist = if group.various { "Various Artists" } else { &m.album_artist };
         if !artist.is_empty() {
-            left.push((format!(" · {artist}"), st(t.text)));
+            left.push((" · ".into(), st(t.dim)));
+            left.push((artist.to_owned(), st(t.album_artist)));
         }
         let tracks = if group.len == 1 { "1 track".into() } else { format!("{} tracks", group.len) };
         let right = format!(" {tracks} · {} ", fmt_time(group.total));
@@ -684,6 +748,21 @@ impl App<'_> {
             None => {}
         }
         Ok(())
+    }
+}
+
+/// Blends two truecolours; anything else picks the nearer end.
+fn lerp_color(a: Color, b: Color, t: f32) -> Color {
+    match (a, b) {
+        (Color::Rgb(a), Color::Rgb(b)) => {
+            let ch = |shift: u32| {
+                let (x, y) = (((a >> shift) & 0xff) as f32, ((b >> shift) & 0xff) as f32);
+                ((x + (y - x) * t).round() as u32) << shift
+            };
+            Color::Rgb(ch(16) | ch(8) | ch(0))
+        }
+        _ if t < 0.5 => a,
+        _ => b,
     }
 }
 

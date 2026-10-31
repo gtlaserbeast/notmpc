@@ -10,6 +10,7 @@ mod mpd;
 mod nc;
 mod queue;
 mod ui;
+mod viz;
 
 use std::sync::mpsc::{self, Receiver};
 use std::thread;
@@ -22,8 +23,6 @@ use config::Config;
 use mpd::{Conn, Target};
 use nc::{Event, Nc, key};
 
-/// How often to redraw while playing, so the progress bar moves.
-const TICK: Duration = Duration::from_millis(250);
 /// How often to try reaching MPD again after losing it.
 const RETRY: Duration = Duration::from_secs(1);
 
@@ -88,8 +87,7 @@ fn main() -> Result<()> {
         app.draw()?;
         nc.render()?;
 
-        let timeout = if app.is_playing() { TICK } else { Duration::from_secs(1) };
-        match nc.get(timeout)? {
+        match nc.get(app.frame_interval())? {
             Some(Event::Key(i)) if i.id == key::RESIZE => nc.refresh()?,
             // MPD trouble is shown in the footer; it never ends the session.
             Some(Event::Key(i)) => match app.handle(i) {

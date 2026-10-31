@@ -14,7 +14,8 @@ use crate::config::Config;
 use crate::keys::{Action, Ctx, Lookup};
 use crate::meta::Meta;
 use crate::mpd::{Ack, Conn, Song, State, Status};
-use crate::nc::{Input, Mouse, Nc};
+use crate::nc::{Input, Mouse, Nc, OwnedPlane};
+use crate::viz::Visualizer;
 use crate::queue::{Displaced, Queue, Row};
 
 /// Idle subsystems that mean the queue changed / status may have changed.
@@ -117,6 +118,12 @@ pub struct App<'nc> {
     pub(crate) art: Art<'nc>,
     pub(crate) browser: Browser,
     pub(crate) preview_art: Art<'nc>,
+    pub(crate) viz: Option<Visualizer>,
+    /// The spectrum's plane, and the header's above it (transparent where
+    /// there's no text). Recreated when the width changes; the header's
+    /// must be created after so it stacks on top.
+    pub(crate) header_plane: Option<OwnedPlane<'nc>>,
+    pub(crate) viz_plane: Option<OwnedPlane<'nc>>,
 }
 
 impl<'nc> App<'nc> {
@@ -144,7 +151,13 @@ impl<'nc> App<'nc> {
             art: Art::new(nc),
             browser: Browser::default(),
             preview_art: Art::new(nc),
+            viz: None,
+            header_plane: None,
+            viz_plane: None,
         };
+        if app.cfg.visualizer {
+            app.viz = Some(Visualizer::new(app.cfg.visualizer_fifo.clone()));
+        }
         app.update(ALL_EVENTS)?;
         if let Some(cur) = app.current_pos() {
             app.queue.sel = app.queue.row_of_song(cur);
@@ -154,6 +167,17 @@ impl<'nc> App<'nc> {
 
     pub fn is_playing(&self) -> bool {
         self.status.state == State::Play && self.offline.is_none()
+    }
+
+    /// How long the main loop may wait for input before redrawing.
+    pub fn frame_interval(&self) -> Duration {
+        if self.viz.as_ref().is_some_and(Visualizer::active) {
+            Duration::from_secs(1) / self.cfg.visualizer_fps
+        } else if self.is_playing() {
+            Duration::from_millis(250)
+        } else {
+            Duration::from_secs(1)
+        }
     }
 
     /// Refetches whatever the idle subsystems in `changed` affect.
