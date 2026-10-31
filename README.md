@@ -209,3 +209,8 @@ in italics.
   (`readpicture`, then `albumart`), decodes them with notcurses' ffmpeg
   backend, and blits them onto their own planes — pixel graphics when the
   terminal supports them, half-blocks otherwise.
+
+## License
+
+Licensed under either of [Apache License 2.0](LICENSE-APACHE) or
+[MIT](LICENSE-MIT), at your option.
