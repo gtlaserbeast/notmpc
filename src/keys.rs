@@ -41,6 +41,9 @@ pub enum Action {
     CommandMode,
     /// notmpc: playback follows the queue cursor (foobar2000-style).
     ToggleFollow,
+    /// notmpc: nudge the visualizer's delay to match the speakers.
+    VisualizerDelayDown,
+    VisualizerDelayUp,
     // navigation
     Up,
     Down,
@@ -128,6 +131,8 @@ impl FromStr for Action {
             "ShowDownloads" => ShowDownloads,
             "Partition" => Partition,
             "ToggleFollow" => ToggleFollow,
+            "VisualizerDelayDown" => VisualizerDelayDown,
+            "VisualizerDelayUp" => VisualizerDelayUp,
             "AddRandom" => AddRandom,
             "CommandMode" => CommandMode,
             "Up" => Up,
@@ -369,6 +374,8 @@ const DEFAULTS: &[(&str, &[(&str, &str)])] = &[
             ("R", "AddRandom"),
             // notmpc
             ("F", "ToggleFollow"),
+            ("[", "VisualizerDelayDown"),
+            ("]", "VisualizerDelayUp"),
         ],
     ),
     (

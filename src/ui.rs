@@ -160,30 +160,34 @@ impl App<'_> {
 
     /// One bar per column, rising from the bottom of the header in eighth
     /// blocks; full cells are drawn as background so text over them keeps
-    /// the colour.
+    /// the colour. Each bar is one colour: the palette's gradient across the
+    /// spectrum, brighter the taller it is (no banding between rows).
     fn draw_viz(&mut self, cols: u32) {
         const PARTIAL: [&str; 8] = [" ", "▁", "▂", "▃", "▄", "▅", "▆", "▇"];
         let Some(mut vp) = self.viz_plane.take() else { return };
         vp.erase();
         let rows = self.cfg.visualizer_rows;
-        let (lo, hi) = (self.cfg.theme.visualizer_low.fg, self.cfg.theme.visualizer_high.fg);
+        let stops = self.cfg.theme.visualizer_colors.clone();
         if let Some(viz) = self.viz.as_mut().filter(|_| self.offline.is_none()) {
             let bars = viz.frame(cols as usize);
             for (x, &b) in bars.iter().enumerate() {
                 let eighths = (b * (rows * 8) as f32).round() as u32;
+                if eighths == 0 {
+                    continue;
+                }
+                // Dim enough for the header text on top to stay readable.
+                let c = Color::Rgb(scale(gradient(&stops, x as f32 / (cols.max(2) - 1) as f32), 0.30 + 0.40 * b));
                 for r in 0..rows {
                     let filled = eighths.saturating_sub(r * 8).min(8);
                     if filled == 0 {
                         break;
                     }
-                    let c = lerp_color(lo, hi, (r as f32 + 0.5) / rows as f32);
                     let y = rows - 1 - r;
+                    vp.set_fg(c);
                     if filled == 8 {
-                        vp.set_fg(c);
                         vp.set_bg(c);
                         vp.putstr_yx(y, x as u32, " ");
                     } else {
-                        vp.set_fg(c);
                         vp.set_bg(Color::Default);
                         vp.set_bg_transparent();
                         vp.putstr_yx(y, x as u32, PARTIAL[filled as usize]);
@@ -831,19 +835,23 @@ impl App<'_> {
     }
 }
 
-/// Blends two truecolours; anything else picks the nearer end.
-fn lerp_color(a: Color, b: Color, t: f32) -> Color {
-    match (a, b) {
-        (Color::Rgb(a), Color::Rgb(b)) => {
-            let ch = |shift: u32| {
-                let (x, y) = (((a >> shift) & 0xff) as f32, ((b >> shift) & 0xff) as f32);
-                ((x + (y - x) * t).round() as u32) << shift
-            };
-            Color::Rgb(ch(16) | ch(8) | ch(0))
-        }
-        _ if t < 0.5 => a,
-        _ => b,
-    }
+/// The colour at `t` (0..1) along evenly spaced RGB stops.
+fn gradient(stops: &[u32], t: f32) -> u32 {
+    let t = t.clamp(0.0, 1.0) * (stops.len() - 1) as f32;
+    let i = (t as usize).min(stops.len().saturating_sub(2));
+    let (a, b) = (stops[i], *stops.get(i + 1).unwrap_or(&stops[i]));
+    let f = t - i as f32;
+    let ch = |shift: u32| {
+        let (x, y) = (((a >> shift) & 0xff) as f32, ((b >> shift) & 0xff) as f32);
+        ((x + (y - x) * f).round() as u32) << shift
+    };
+    ch(16) | ch(8) | ch(0)
+}
+
+/// Scales an RGB colour's brightness.
+fn scale(rgb: u32, k: f32) -> u32 {
+    let ch = |shift: u32| ((((rgb >> shift) & 0xff) as f32 * k).round().min(255.0) as u32) << shift;
+    ch(16) | ch(8) | ch(0)
 }
 
 /// How a queue row is highlighted: the highlight (`primary`) replaces the

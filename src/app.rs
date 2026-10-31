@@ -168,7 +168,7 @@ impl<'nc> App<'nc> {
             viz_plane: None,
         };
         if app.cfg.visualizer {
-            app.viz = Some(Visualizer::new(app.cfg.visualizer_fifo.clone()));
+            app.viz = Some(Visualizer::new(app.cfg.visualizer_fifo.clone(), app.cfg.visualizer_delay));
         }
         app.update(ALL_EVENTS)?;
         if let Some(cur) = app.current_pos() {
@@ -494,6 +494,20 @@ impl<'nc> App<'nc> {
             ToggleRandom => self.mpd(&format!("random {}", u8::from(!s.random)))?,
             ToggleSingle => self.mpd(&format!("single {}", u8::from(!s.single)))?,
             ToggleConsume => self.mpd(&format!("consume {}", u8::from(!s.consume)))?,
+            VisualizerDelayDown | VisualizerDelayUp => {
+                let Some(viz) = self.viz.as_mut() else {
+                    self.say("the visualizer is off");
+                    return Ok(true);
+                };
+                let ms = viz.delay().as_millis() as i64 + if action == VisualizerDelayUp { 10 } else { -10 };
+                let ms = ms.clamp(0, 2000) as u64;
+                viz.set_delay(Duration::from_millis(ms));
+                let saved = crate::config::State { visualizer_delay_ms: Some(ms) }.save();
+                self.say(match saved {
+                    Ok(()) => format!("visualizer delay {ms} ms (saved)"),
+                    Err(e) => format!("visualizer delay {ms} ms (not saved: {e})"),
+                });
+            }
             ToggleFollow => {
                 self.follow = !self.follow;
                 if self.follow {

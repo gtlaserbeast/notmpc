@@ -73,9 +73,25 @@ transparent plane above it. It needs MPD's `fifo` output:
 
 notmpc reads `$XDG_RUNTIME_DIR/mpd/visualizer.fifo` by default
 (`visualizer_fifo`), at 30 fps (`visualizer_fps`), over 3 rows
-(`visualizer_rows`). It idles when nothing plays. Colours:
-`visualizer_low` / `visualizer_high` in `[theme]` (keep them dim; text sits
-on them). Cost measured at 190×45: ~1% of a core, ~21 KiB/s to the terminal.
+(`visualizer_rows`). It idles when nothing plays.
+
+**Delay.** MPD writes the FIFO as it plays, but PipeWire buffers before the
+speakers, so the bars would run ahead. notmpc timestamps the audio and
+draws what arrived `visualizer_delay_ms` ago (default 150). Tune it by ear
+with `[` / `]` (±10 ms); the value is saved to
+`~/.local/state/notmpc/state.toml` and wins over the config. It stays put
+unless PipeWire's quantum changes (another app asking for lower latency).
+
+**Colours.** Each bar is one colour, taken from a gradient across the
+spectrum (bass → treble), brighter the taller the bar. Pick a palette or
+give your own stops:
+
+    [theme]
+    visualizer_colors = "aurora"   # aurora (default), ember, ocean, sunset, mono
+    # visualizer_colors = ["#7b2ff7", "#2f80ed", "#12c2a0"]
+
+Cost measured at 190×45 while playing: ~1.4% of a core for notmpc plus
+~1% for kitty, ~21 KiB/s to the terminal; nothing when paused.
 
 ## Queueing from a file manager
 
@@ -104,7 +120,7 @@ notation, so snippets carry over) and the gtlaserbeast theme.
 
 rmpc 0.11's defaults (`rmpc config`), including multi-key sequences; Search
 is on 3 since the Artists/Albums/Playlists tabs don't exist. notmpc adds `t`
-(play next), `F` (follow the highlight), `H`/`L` (collapse/expand all albums), `h`/`l` on the queue
+(play next), `F` (follow the highlight), `[` / `]` (visualizer delay), `H`/`L` (collapse/expand all albums), `h`/`l` on the queue
 (collapse/expand the album under the cursor), Home/End, and Del.
 
 | key                          | action                                     |

@@ -4,7 +4,12 @@
 //! FFT and folds it into one log-spaced band per column (40 Hz–16 kHz),
 //! with a tilt so treble isn't dwarfed by bass, fast attack, and slow
 //! fall. When the FIFO goes quiet (pause, stop) the bars fall to rest.
+//!
+//! MPD writes the FIFO as it plays, but PipeWire's buffering means the
+//! speakers lag behind it, so samples are timestamped on arrival and each
+//! frame analyses what arrived `delay` ago.
 
+use std::collections::VecDeque;
 use std::fs::File;
 use std::io::Read;
 use std::path::PathBuf;
@@ -29,14 +34,33 @@ const FALL_PER_SEC: f32 = 1.6;
 /// Samples older than this mean the FIFO went quiet.
 const STALE: Duration = Duration::from_millis(150);
 
+/// Samples kept: enough for the longest delay plus one FFT window.
+const KEEP: usize = 3 * RATE as usize;
+
 struct Shared {
-    /// Latest mono samples, oldest first, at most FFT_SIZE.
-    samples: Vec<f32>,
-    last_data: Option<Instant>,
+    /// Recent mono samples, oldest first.
+    samples: VecDeque<f32>,
+    /// Samples ever received; `samples.back()` is number `written - 1`.
+    written: u64,
+    /// (arrival time, `written` after that read), oldest first.
+    marks: VecDeque<(Instant, u64)>,
+}
+
+impl Shared {
+    /// How many samples had arrived by time `t`, interpolating within a
+    /// read (MPD paces the FIFO in real time). None if nothing had yet.
+    fn written_at(&self, t: Instant) -> Option<u64> {
+        let i = self.marks.iter().rposition(|(at, _)| *at <= t)?;
+        let (at, n) = self.marks[i];
+        let next = self.marks.get(i + 1).map_or(n, |m| m.1);
+        let since = (t - at).as_secs_f32() * RATE;
+        Some((n + since as u64).min(next))
+    }
 }
 
 pub struct Visualizer {
     shared: Arc<Mutex<Shared>>,
+    delay: Duration,
     fft: Arc<dyn Fft<f32>>,
     window: Vec<f32>,
     buf: Vec<Complex<f32>>,
@@ -47,8 +71,9 @@ pub struct Visualizer {
 impl Visualizer {
     /// Starts reading `fifo` in the background. A missing FIFO isn't an
     /// error: the reader keeps retrying (MPD creates it on start).
-    pub fn new(fifo: PathBuf) -> Self {
-        let shared = Arc::new(Mutex::new(Shared { samples: Vec::with_capacity(FFT_SIZE * 2), last_data: None }));
+    pub fn new(fifo: PathBuf, delay: Duration) -> Self {
+        let shared =
+            Arc::new(Mutex::new(Shared { samples: VecDeque::with_capacity(KEEP), written: 0, marks: VecDeque::new() }));
         let s = Arc::clone(&shared);
         thread::spawn(move || read_loop(&fifo, &s));
         let window = (0..FFT_SIZE)
@@ -56,6 +81,7 @@ impl Visualizer {
             .collect();
         Self {
             shared,
+            delay,
             fft: FftPlanner::new().plan_fft_forward(FFT_SIZE),
             window,
             buf: vec![Complex::default(); FFT_SIZE],
@@ -69,8 +95,24 @@ impl Visualizer {
         self.live() || self.bars.iter().any(|&b| b > 0.0)
     }
 
+    pub fn delay(&self) -> Duration {
+        self.delay
+    }
+
+    pub fn set_delay(&mut self, d: Duration) {
+        self.delay = d.min(Duration::from_secs(2));
+    }
+
+    /// The moment whose audio is on the speakers now.
+    fn heard(&self) -> Option<Instant> {
+        Instant::now().checked_sub(self.delay)
+    }
+
     fn live(&self) -> bool {
-        self.shared.lock().unwrap().last_data.is_some_and(|t| t.elapsed() < STALE)
+        let Some(t) = self.heard() else { return false };
+        let s = self.shared.lock().unwrap();
+        // the latest read before `t`, recent enough to still be playing
+        s.marks.iter().rev().find(|(at, _)| *at <= t).is_some_and(|(at, _)| t - *at < STALE)
     }
 
     /// Advances one frame; returns `n` bar heights in 0..=1.
@@ -94,9 +136,14 @@ impl Visualizer {
     fn analyse(&mut self, n: usize) -> Vec<f32> {
         {
             let s = self.shared.lock().unwrap();
-            let pad = FFT_SIZE - s.samples.len().min(FFT_SIZE);
+            let end_n = self.heard().and_then(|t| s.written_at(t)).unwrap_or(0);
+            // index just past the window's last sample, within `samples`
+            let first_n = s.written - s.samples.len() as u64;
+            let end = end_n.saturating_sub(first_n).min(s.samples.len() as u64) as usize;
+            let start = end.saturating_sub(FFT_SIZE);
+            let pad = FFT_SIZE - (end - start);
             for (i, c) in self.buf.iter_mut().enumerate() {
-                let x = if i < pad { 0.0 } else { s.samples[i - pad] };
+                let x = if i < pad { 0.0 } else { s.samples[start + i - pad] };
                 *c = Complex::new(x * self.window[i], 0.0);
             }
         }
@@ -139,15 +186,25 @@ fn read_loop(fifo: &PathBuf, shared: &Mutex<Shared>) {
             };
             carry.extend_from_slice(&raw[..n]);
             let frames = carry.len() / 4;
+            let now = Instant::now();
             let mut s = shared.lock().unwrap();
             for fr in carry[..frames * 4].as_chunks::<4>().0 {
                 let l = i16::from_le_bytes([fr[0], fr[1]]) as f32;
                 let r = i16::from_le_bytes([fr[2], fr[3]]) as f32;
-                s.samples.push((l + r) / (2.0 * 32768.0));
+                s.samples.push_back((l + r) / (2.0 * 32768.0));
             }
-            let excess = s.samples.len().saturating_sub(FFT_SIZE);
+            s.written += frames as u64;
+            let written = s.written;
+            // This read's samples arrived over the last read's span; stamp
+            // its start so interpolation runs forward through it.
+            let began = now.checked_sub(Duration::from_secs_f32(frames as f32 / RATE)).unwrap_or(now);
+            s.marks.push_back((began, written - frames as u64));
+            s.marks.push_back((now, written));
+            let excess = s.samples.len().saturating_sub(KEEP);
             s.samples.drain(..excess);
-            s.last_data = Some(Instant::now());
+            while s.marks.front().is_some_and(|(at, _)| now.duration_since(*at) > Duration::from_secs(3)) {
+                s.marks.pop_front();
+            }
             drop(s);
             carry.drain(..frames * 4);
         }

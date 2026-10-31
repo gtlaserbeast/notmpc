@@ -69,9 +69,9 @@ pub struct Theme {
     pub label: Style,
     /// Album artist on queue album headers.
     pub album_artist: Style,
-    /// Spectrum colours, bottom to top (dim: the header text sits on them).
-    pub visualizer_low: Style,
-    pub visualizer_high: Style,
+    /// Spectrum gradient stops, bass to treble (RGB). Each bar takes the
+    /// colour at its frequency, brighter the taller it is.
+    pub visualizer_colors: Vec<u32>,
     pub dir_symbol: String,
     pub song_symbol: String,
 }
@@ -109,11 +109,43 @@ impl Default for Theme {
             progress_symbols: ["\u{e0b7}", "─", "\u{f189c}", " ", "\u{e0b5}"].map(String::from),
             label: Style::fg(YELLOW),
             album_artist: Style::fg(Color::Palette(6)),
-            visualizer_low: Style::fg(Color::Rgb(0x4a2600)),
-            visualizer_high: Style::fg(Color::Rgb(0x3f5c00)),
+            visualizer_colors: palette("aurora").expect("built-in palette"),
             dir_symbol: "🖿".into(),
             song_symbol: "🕪".into(),
         }
+    }
+}
+
+/// Settings notmpc changes itself (`~/.local/state/notmpc/state.toml`),
+/// kept apart from the hand-edited config. They win over the config.
+#[derive(Default, Deserialize, serde::Serialize)]
+#[serde(default)]
+pub struct State {
+    pub visualizer_delay_ms: Option<u64>,
+}
+
+impl State {
+    fn path() -> Option<PathBuf> {
+        env::var_os("XDG_STATE_HOME")
+            .map(PathBuf::from)
+            .or_else(|| env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/state")))
+            .map(|d| d.join("notmpc/state.toml"))
+    }
+
+    pub fn load() -> Self {
+        Self::path()
+            .and_then(|p| fs::read_to_string(p).ok())
+            .and_then(|t| toml::from_str(&t).ok())
+            .unwrap_or_default()
+    }
+
+    pub fn save(&self) -> Result<()> {
+        let path = Self::path().context("no HOME")?;
+        if let Some(dir) = path.parent() {
+            fs::create_dir_all(dir)?;
+        }
+        fs::write(&path, toml::to_string(self)?)?;
+        Ok(())
     }
 }
 
@@ -134,6 +166,9 @@ pub struct Config {
     /// Header rows it fills (the header is 2 rows, plus the progress bar).
     pub visualizer_rows: u32,
     pub visualizer_fps: u32,
+    /// How far the speakers lag MPD's FIFO (PipeWire buffering). Tuned
+    /// live with [ and ], which saves it to the state file.
+    pub visualizer_delay: Duration,
     pub keys: Keymap,
     pub theme: Theme,
 }
@@ -153,6 +188,7 @@ impl Default for Config {
                 .join("mpd/visualizer.fifo"),
             visualizer_rows: 3,
             visualizer_fps: 30,
+            visualizer_delay: Duration::from_millis(150),
             keys: Keymap::defaults(),
             theme: Theme::default(),
         }
@@ -172,6 +208,7 @@ struct File {
     visualizer_fifo: Option<String>,
     visualizer_rows: Option<u32>,
     visualizer_fps: Option<u32>,
+    visualizer_delay_ms: Option<u64>,
     keys: HashMap<String, HashMap<String, String>>,
     theme: HashMap<String, ThemeEntry>,
 }
@@ -192,6 +229,8 @@ enum ThemeEntry {
     },
     /// `progress_symbols = [...]`
     Symbols([String; 5]),
+    /// `visualizer_colors = ["#..", ...]`
+    List(Vec<String>),
 }
 
 impl Config {
@@ -202,8 +241,16 @@ impl Config {
             .map(|d| d.join("notmpc/config.toml"))
     }
 
-    /// Loads the config file if there is one.
+    /// Loads the config file if there is one, then the saved state.
     pub fn load() -> Result<Self> {
+        let mut cfg = Self::load_config()?;
+        if let Some(ms) = State::load().visualizer_delay_ms {
+            cfg.visualizer_delay = Duration::from_millis(ms);
+        }
+        Ok(cfg)
+    }
+
+    fn load_config() -> Result<Self> {
         let mut cfg = Self::default();
         let Some(path) = Self::path().filter(|p| p.exists()) else {
             return Ok(cfg);
@@ -241,6 +288,9 @@ impl Config {
         if let Some(v) = file.visualizer_fps {
             cfg.visualizer_fps = v.clamp(5, 60);
         }
+        if let Some(v) = file.visualizer_delay_ms {
+            cfg.visualizer_delay = Duration::from_millis(v);
+        }
         for (section, entries) in &file.keys {
             cfg.keys.merge(section, entries).with_context(|| path.display().to_string())?;
         }
@@ -255,6 +305,32 @@ impl Theme {
     fn set(&mut self, name: &str, entry: ThemeEntry) -> Result<()> {
         if let ("dir_symbol" | "song_symbol", ThemeEntry::Color(sym)) = (name, &entry) {
             *if name == "dir_symbol" { &mut self.dir_symbol } else { &mut self.song_symbol } = sym.clone();
+            return Ok(());
+        }
+        if name == "visualizer_colors" {
+            let colors = match entry {
+                ThemeEntry::Color(name) => palette(&name).ok_or_else(|| anyhow::anyhow!("unknown palette {name:?}"))?,
+                ThemeEntry::Style { .. } => bail!("expected a palette name or a list of colours"),
+                // a list of exactly five parses as the symbols shape
+                ThemeEntry::Symbols(five) => five
+                    .iter()
+                    .map(|c| match parse_color(c)? {
+                        Color::Rgb(rgb) => Ok(rgb),
+                        _ => bail!("visualizer colours must be #rrggbb"),
+                    })
+                    .collect::<Result<Vec<u32>>>()?,
+                ThemeEntry::List(list) => list
+                    .iter()
+                    .map(|c| match parse_color(c)? {
+                        Color::Rgb(rgb) => Ok(rgb),
+                        _ => bail!("visualizer colours must be #rrggbb"),
+                    })
+                    .collect::<Result<Vec<u32>>>()?,
+            };
+            if colors.is_empty() {
+                bail!("need at least one colour");
+            }
+            self.visualizer_colors = colors;
             return Ok(());
         }
         if name == "progress_symbols" {
@@ -285,8 +361,7 @@ impl Theme {
             "progress_track" => &mut self.progress_track,
             "label" => &mut self.label,
             "album_artist" => &mut self.album_artist,
-            "visualizer_low" => &mut self.visualizer_low,
-            "visualizer_high" => &mut self.visualizer_high,
+
             _ => bail!("unknown theme entry"),
         };
         *slot = match entry {
@@ -297,10 +372,22 @@ impl Theme {
                 bold,
                 italic,
             },
-            ThemeEntry::Symbols(_) => bail!("expected a colour or a style table"),
+            ThemeEntry::Symbols(_) | ThemeEntry::List(_) => bail!("expected a colour or a style table"),
         };
         Ok(())
     }
+}
+
+/// Built-in spectrum palettes, bass to treble.
+pub fn palette(name: &str) -> Option<Vec<u32>> {
+    Some(match name {
+        "aurora" => vec![0x7b2ff7, 0x2f80ed, 0x12c2a0],
+        "ember" => vec![0xdd6f00, 0xe8b100, 0xa7ff04],
+        "ocean" => vec![0x0b3d91, 0x1f8fd6, 0x7fe0f0],
+        "sunset" => vec![0xc2185b, 0xff6f3c, 0xffc94a],
+        "mono" => vec![0x8a8a8a],
+        _ => return None,
+    })
 }
 
 /// `#rrggbb`, `default`, or an rmpc/ratatui colour name, which maps to the
