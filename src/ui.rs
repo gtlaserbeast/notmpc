@@ -23,7 +23,6 @@ use crate::config::{Style, Theme};
 use crate::mpd::State;
 use crate::nc::{self, BOLD, Color, ITALIC, Plane};
 
-const HEADER_ROWS: u32 = 4;
 const FOOTER_ROWS: u32 = 1;
 /// Below this width the queue tab drops the art pane.
 const MIN_ART_COLS: u32 = 80;
@@ -110,10 +109,16 @@ impl App<'_> {
         p.erase();
         self.hits.borrow_mut().clear();
         let (rows, cols) = p.dim_yx();
-        if rows < HEADER_ROWS + FOOTER_ROWS + 3 || cols < 40 {
+        // header (2 rows), progress (the waveform takes 2), tabs
+        let wave_mode = self.seekbar.is_some();
+        let header_rows = if wave_mode { 5 } else { 4 };
+        if rows < header_rows + FOOTER_ROWS + 3 || cols < 40 {
             self.art.show(None)?;
             self.header_plane = None;
             self.viz_plane = None;
+            if let Some(sb) = self.seekbar.as_mut() {
+                sb.hide();
+            }
             reset(&mut p);
             p.putstr_yx(0, 0, "terminal too small");
             return Ok(());
@@ -121,11 +126,14 @@ impl App<'_> {
 
         // Header and progress bar on their own transparent plane, above the
         // spectrum's (see `App::header_plane`).
-        if self.header_plane.as_ref().is_none_or(|h| h.dim_yx() != (3, cols)) {
+        // In waveform mode the header plane stops above it: pixel images
+        // shouldn't sit under other planes.
+        let hp_rows = if wave_mode { 2 } else { 3 };
+        if self.header_plane.as_ref().is_none_or(|h| h.dim_yx() != (hp_rows, cols)) {
             self.header_plane = None;
             self.viz_plane = None;
-            self.viz_plane = Some(nc.new_plane(0, 0, self.cfg.visualizer_rows, cols)?);
-            let mut h = nc.new_plane(0, 0, 3, cols)?;
+            self.viz_plane = Some(nc.new_plane(0, 0, self.cfg.visualizer_rows.min(hp_rows), cols)?);
+            let mut h = nc.new_plane(0, 0, hp_rows, cols)?;
             h.set_base_transparent();
             h.move_top();
             self.header_plane = Some(h);
@@ -134,12 +142,17 @@ impl App<'_> {
         let mut hp = self.header_plane.take().expect("created above");
         hp.erase();
         self.draw_header(&mut hp, cols);
-        self.draw_progress(&mut hp, 2, cols);
+        if !wave_mode {
+            self.draw_progress(&mut hp, 2, cols);
+        }
         reset(&mut hp);
         self.header_plane = Some(hp);
+        if wave_mode {
+            self.draw_seekbar(&mut p, cols)?;
+        }
 
-        self.draw_tabs(&mut p, 3, cols);
-        let body = Rect { y: HEADER_ROWS, x: 0, rows: rows - HEADER_ROWS - FOOTER_ROWS, cols };
+        self.draw_tabs(&mut p, header_rows - 1, cols);
+        let body = Rect { y: header_rows, x: 0, rows: rows - header_rows - FOOTER_ROWS, cols };
         if self.tab != Tab::Directories {
             self.preview_art.show(None)?;
         }
@@ -168,7 +181,7 @@ impl App<'_> {
         const PARTIAL: [&str; 8] = [" ", "▁", "▂", "▃", "▄", "▅", "▆", "▇"];
         let Some(mut vp) = self.viz_plane.take() else { return };
         vp.erase();
-        let rows = self.cfg.visualizer_rows;
+        let rows = vp.dim_yx().0;
         let stops = self.cfg.theme.visualizer_colors.clone();
         if let Some(viz) = self.viz.as_mut().filter(|_| self.offline.is_none() && self.viz_on) {
             let bars = viz.frame(cols as usize);
@@ -319,6 +332,40 @@ impl App<'_> {
     }
 
     /// `[start][elapsed…][thumb][remaining…][end]` across the full width.
+    /// The waveform at rows 2-3, or the plain bar while it's decoding.
+    fn draw_seekbar(&mut self, p: &mut Plane, cols: u32) -> Result<()> {
+        let t = &self.cfg.theme;
+        let lime = match t.progress_thumb.fg {
+            Color::Rgb(rgb) => rgb,
+            _ => 0xa7ff04,
+        };
+        let s = &self.status;
+        let frac = if s.duration.is_zero() || s.state == State::Stop {
+            0.0
+        } else {
+            (self.elapsed().as_secs_f64() / s.duration.as_secs_f64()) as f32
+        };
+        let playing = self.is_playing();
+        let file = self.song.as_ref().map(|(song, _)| song.file.clone());
+        let overlay = self.overlay.is_some();
+        let (sb, art) = (self.seekbar.as_mut().expect("wave mode"), &self.art);
+        // pixel images can't sit under the panel's text
+        let drew = if overlay {
+            sb.hide();
+            false
+        } else {
+            sb.draw(2, cols, file.as_deref(), frac, playing, art.visual(), (lime, lime))?
+        };
+        if drew {
+            for y in 2..4 {
+                self.hit(y, 0, cols, Target::Progress);
+            }
+        } else {
+            self.draw_progress(p, 2, cols);
+        }
+        Ok(())
+    }
+
     fn draw_progress(&self, p: &mut Plane, y: u32, cols: u32) {
         let t = &self.cfg.theme;
         let [start, elapsed, thumb, track, end] = &t.progress_symbols;

@@ -12,6 +12,7 @@ mod overlay;
 mod queue;
 mod scrobble;
 mod search;
+mod seekbar;
 mod ui;
 mod viz;
 mod wavebar;

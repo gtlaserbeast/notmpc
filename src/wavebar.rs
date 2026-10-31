@@ -75,13 +75,16 @@ pub struct Colors {
     pub played: u32,
     pub unplayed: u32,
     pub playhead: u32,
+    /// Translucency (pixel graphics). Character blitters drop translucent
+    /// pixels, so the fallback draws everything solid.
+    pub translucent: bool,
 }
 
 impl Colors {
     /// Played in orange, nudged toward the cover's average colour.
     pub fn tinted(orange: u32, cover: Option<u32>, playhead: u32) -> Self {
         let played = cover.map_or(orange, |c| mix(orange, c, 0.3));
-        Self { played, unplayed: 0x8a8a8a, playhead }
+        Self { played, unplayed: 0x8a8a8a, playhead, translucent: true }
     }
 }
 
@@ -99,7 +102,12 @@ pub fn render_wave(wave: &Waveform, w: u32, h: u32, played: u32, colors: &Colors
         let done = x < played;
         // the played part brightens left to right
         let base = if done { mix(colors.played, 0xffffff, 0.15 * x as f32 / played.max(1) as f32) } else { colors.unplayed };
-        let (outer, inner) = if done { (rgba(base, 150), rgba(base, 255)) } else { (rgba(base, 70), rgba(base, 140)) };
+        let (outer, inner) = match (done, colors.translucent) {
+            (true, true) => (rgba(base, 150), rgba(base, 255)),
+            (false, true) => (rgba(base, 70), rgba(base, 140)),
+            (true, false) => (rgba(mix(base, 0, 0.35), 255), rgba(base, 255)),
+            (false, false) => (rgba(0x4a4a4a, 255), rgba(0x6e6e6e, 255)),
+        };
         for y in 0..h {
             let d = (y as f32 + 0.5 - mid).abs();
             if d <= r.max(0.5) {
@@ -127,14 +135,7 @@ pub fn omnium(phase: f32, frame: u32, cargo: u32) -> Canvas {
     let fr = rgba(frame, 255);
     let ca = rgba(cargo, 255);
 
-    let mut line = |c: &mut Canvas, (x0, y0): (f32, f32), (x1, y1): (f32, f32), col: [u8; 4]| {
-        let n = ((x1 - x0).abs().max((y1 - y0).abs()) * 2.0).ceil().max(1.0) as i32;
-        for i in 0..=n {
-            let t = i as f32 / n as f32;
-            c.put((x0 + (x1 - x0) * t).round() as i32, (y0 + (y1 - y0) * t).round() as i32, col);
-        }
-    };
-    let wheel = |c: &mut Canvas, line: &mut dyn FnMut(&mut Canvas, (f32, f32), (f32, f32), [u8; 4]), (cx, cy): (f32, f32), r: f32| {
+    let wheel = |c: &mut Canvas, (cx, cy): (f32, f32), r: f32| {
         for k in 0..3 {
             let a = (phase + k as f32 / 3.0) * std::f32::consts::TAU;
             let (dx, dy) = (a.cos() * (r - 0.8), a.sin() * (r - 0.8));
@@ -152,8 +153,8 @@ pub fn omnium(phase: f32, frame: u32, cargo: u32) -> Canvas {
 
     let rear = (6.5, 10.5);
     let front = (26.0, 12.5);
-    wheel(&mut c, &mut line, rear, 5.0);
-    wheel(&mut c, &mut line, front, 3.0);
+    wheel(&mut c, rear, 5.0);
+    wheel(&mut c, front, 3.0);
 
     let bb = (13.0, 12.0);
     let seat = (10.0, 5.0);
@@ -178,6 +179,14 @@ pub fn omnium(phase: f32, frame: u32, cargo: u32) -> Canvas {
     line(&mut c, (29.0, 4.0), (29.0, 8.0), ca);
     line(&mut c, (22.0, 6.0), (29.0, 6.0), ca);
     c
+}
+
+fn line(c: &mut Canvas, (x0, y0): (f32, f32), (x1, y1): (f32, f32), col: [u8; 4]) {
+    let n = ((x1 - x0).abs().max((y1 - y0).abs()) * 2.0).ceil().max(1.0) as i32;
+    for i in 0..=n {
+        let t = i as f32 / n as f32;
+        c.put((x0 + (x1 - x0) * t).round() as i32, (y0 + (y1 - y0) * t).round() as i32, col);
+    }
 }
 
 #[cfg(test)]
@@ -214,16 +223,3 @@ mod tests {
     }
 }
 
-#[cfg(test)]
-#[test]
-#[ignore]
-fn dump_preview() {
-    let path = std::env::var("NOTMPC_DUMP").unwrap();
-    let w = crate::waveform::compute(std::path::Path::new(&std::env::var("NOTMPC_TRACK").unwrap())).unwrap();
-    let mut c = render_wave(&w, 640, 44, 260, &Colors::tinted(0xdd6f00, Some(0x3a6ea5), 0xa7ff04));
-    let bike = omnium(0.1, 0xa7ff04, 0xdd6f00);
-    c.stamp(&bike, 2, 260 - 32, 44 - 32 - 4);
-    let mut out = format!("{} {}\n", c.w, c.h).into_bytes();
-    out.extend(&c.px);
-    std::fs::write(path, out).unwrap();
-}

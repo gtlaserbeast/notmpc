@@ -87,11 +87,6 @@ impl Loader {
         }
         None
     }
-
-    /// Whether `path` is still being decoded.
-    pub fn pending(&self, path: &Path) -> bool {
-        matches!(self.slots.lock().unwrap().get(path), Some(Slot::Pending))
-    }
 }
 
 fn cache_path(path: &Path) -> Option<PathBuf> {

@@ -58,6 +58,22 @@ one album in different folders stay separate, labelled with the folder.
 Mouse: click the query line to edit, a result to select, double-click to
 queue and play, the ▾/▸ arrow to fold.
 
+## Waveform progress bar
+
+The progress bar is the track's waveform, two rows tall: the loudness
+envelope mirrored around the middle, the played part orange (tinted toward
+the cover's colours), the rest translucent grey, a lime playhead, and a
+pixel-art Omnium Cargo riding it — rising with the music, wheels turning.
+Click anywhere on it to seek.
+
+Tracks are decoded once on a low-priority thread (a 59-minute FLAC takes
+about 2 s) and cached in `~/.cache/notmpc/waveforms`; until a track is
+ready the plain bar shows. It needs the music files locally (MPD's
+`music_directory`, which MPD only tells local clients). Without pixel
+graphics it's drawn in braille and there's no rider. `waveform = false`
+brings back the one-line bar. Measured with a kitty-like terminal at
+190×45: ~1.5% of a core, ~26 KiB/s to the terminal.
+
 ## Visualizer
 
 A spectrum (one bar per column, 40 Hz–16 kHz, log-spaced) fills the
@@ -207,9 +223,3 @@ in italics.
   (`readpicture`, then `albumart`), decodes them with notcurses' ffmpeg
   backend, and blits them onto their own planes — pixel graphics when the
   terminal supports them, half-blocks otherwise.
-
-## Roadmap
-
-1. Waveform seek bar: the track's loudness envelope as a 2-row pixel strip,
-   played part in an orange gradient (tinted from the cover), with a 2-row
-   pixel-art rider bobbing along the contour: an Omnium Cargo bike

@@ -70,6 +70,10 @@ impl<'nc> Art<'nc> {
         self.visual = visual;
     }
 
+    pub fn visual(&self) -> Option<&Visual> {
+        self.visual.as_deref()
+    }
+
     pub fn has_image(&self) -> bool {
         self.visual.is_some()
     }

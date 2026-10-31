@@ -186,13 +186,14 @@ impl Nc {
         (cy > 0 && cx > 0).then_some((cy, cx))
     }
 
-    /// Draws `v` onto `plane` itself, pixel for pixel (no scaling); a
-    /// later blit onto the same plane replaces it.
+    /// Draws `v` onto `plane` itself, unscaled: pixel for pixel, or (no
+    /// pixel graphics) 2x4 pixels per cell in braille. A later blit onto
+    /// the same plane replaces it.
     pub fn blit_onto(&self, v: &Visual, plane: &mut Plane, pixel: bool) -> Result<()> {
         let opts = sys::ncvisual_options {
             n: plane.raw,
             scaling: sys::ncscale_e_NCSCALE_NONE,
-            blitter: if pixel { sys::ncblitter_e_NCBLIT_PIXEL } else { sys::ncblitter_e_NCBLIT_2x1 },
+            blitter: if pixel { sys::ncblitter_e_NCBLIT_PIXEL } else { sys::ncblitter_e_NCBLIT_BRAILLE },
             ..Default::default()
         };
         // SAFETY: raw, v and plane are live; opts is valid for the call.
@@ -338,6 +339,12 @@ impl Plane<'_> {
                 Color::Palette(i) => _ = sys::ncplane_set_bg_palindex(self.raw, i.into()),
             }
         }
+    }
+
+    /// Moves the plane to (y, x) relative to its parent.
+    pub fn move_yx(&mut self, y: u32, x: u32) {
+        // SAFETY: raw is a live plane.
+        unsafe { sys::ncplane_move_yx(self.raw, y as i32, x as i32) };
     }
 
     /// Raises the plane above every other.
