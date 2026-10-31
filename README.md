@@ -130,7 +130,7 @@ notation, so snippets carry over) and the gtlaserbeast theme.
 
 rmpc 0.11's defaults (`rmpc config`), including multi-key sequences; Search
 is on 3 since the Artists/Albums/Playlists tabs don't exist. notmpc adds `t`
-(play next), `F` (follow the highlight), `V` (visualizer on/off), `[` / `]` (visualizer delay), `*` (love), `H`/`L` (collapse/expand all albums), `h`/`l` on the queue
+(play next), `F` (follow the highlight), `V` (visualizer on/off), `[` / `]` (visualizer delay), `H`/`L` (collapse/expand all albums), `h`/`l` on the queue
 (collapse/expand the album under the cursor), Home/End, and Del.
 
 | key                          | action                                     |
@@ -164,13 +164,6 @@ open over a dimmed screen: j/k scroll, Enter or a click toggles an output,
 Esc, q or a click outside closes. Song info lists every tag MPD has plus
 extra tags from the file (ReplayGain, comments...). Covers hide while a
 panel is open (pixel graphics can't sit under text).
-
-**Scrobbling.** The `last.fm` badge in the header reads mpdscribble's state
-(it has no status API): dim when it isn't connected to MPD, `!` when its
-latest message is a Last.fm problem from the last 30 minutes, `✓` once a
-submission is logged during the current song (needs `verbose = 2` in
-mpdscribble.conf), `·N` for unsent scrobbles in its journal. Click it for
-the details and its recent log lines. `*` loves the playing song.
 
 On the queue tab, `▸ collapse all` / `▾ expand all` at the right of the tab
 bar folds every album (keys `H` / `L`).

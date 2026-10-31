@@ -16,7 +16,6 @@ use anyhow::Result;
 
 use crate::app::{App, Hit, List, Mode, Prompt, TABS, Tab, Target};
 use crate::queue::{Queue, Row};
-use crate::scrobble::Health;
 use crate::art::Rect;
 use crate::browser::Entry;
 use crate::config::{Style, Theme};
@@ -243,26 +242,7 @@ impl App<'_> {
         if s.updating {
             right0.push(("Updating… ".into(), t.volume));
         }
-        // scrobble badge
-        let sc = &self.scrobble;
-        let badge = match sc.health() {
-            Health::Absent => t.dim,
-            Health::Ok => t.text,
-            Health::Warning => t.volume,
-        };
-        let badge_start = segs_width(&right0);
-        right0.push(("last.fm".into(), badge));
-        if sc.health() == Health::Warning {
-            right0.push(("!".into(), t.volume));
-        }
-        if sc.submitted {
-            right0.push((" ✓".into(), t.progress_thumb));
-        }
-        if sc.backlog > 0 {
-            right0.push((format!(" ·{}", sc.backlog), t.date));
-        }
-        let badge_w = segs_width(&right0) - badge_start;
-        right0.push(("   ".into(), t.text));
+        let vol_start = segs_width(&right0);
         right0.push(("Volume: ".into(), t.volume));
         match s.volume {
             Some(v) => {
@@ -283,8 +263,7 @@ impl App<'_> {
         draw_three(p, 0, cols, &left0, &center0, &right0);
         let rw = segs_width(&right0);
         let x0 = cols.saturating_sub(rw);
-        self.hit(0, x0 + badge_start, badge_w, Target::Scrobble);
-        self.hit(0, x0 + badge_start + badge_w, rw - badge_start - badge_w, Target::Volume);
+        self.hit(0, x0 + vol_start, rw - vol_start, Target::Volume);
 
         // row 1: time (bitrate, format)   artist - album   modes
         let mut info = format!("{} / {}", fmt_time(self.elapsed()), fmt_time(s.duration));

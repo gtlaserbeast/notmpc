@@ -11,7 +11,6 @@ mod nc;
 mod overlay;
 mod pixelbar;
 mod queue;
-mod scrobble;
 mod search;
 mod ui;
 mod viz;
