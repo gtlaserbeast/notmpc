@@ -1,8 +1,9 @@
 # notmpc
 
 A terminal MPD client drawn with [notcurses](https://notcurses.com): album
-art and a pixel progress bar in terminals with pixel graphics (kitty, sixel),
-a spectrum visualizer behind the header, and rmpc's keys.
+art in pixel graphics (kitty, sixel; character cells elsewhere), a braille
+spectrum visualizer behind the header and a braille progress bar, and
+rmpc's keys.
 
 ![notmpc in kitty: the queue grouped by album, the cover at full height,
 the spectrum behind the header](docs/screenshot.webp)
@@ -168,7 +169,9 @@ terminal's colour scheme, and only symbols any monospace font has.
 ## Keys
 
 rmpc 0.11's defaults (`rmpc config`), including multi-key sequences; Search
-is on 3 since the Artists/Albums/Playlists tabs don't exist. notmpc adds
+is on 3 since the Artists/Albums/Playlists tabs don't exist, and keys for
+actions notmpc doesn't have (command mode, rating, playlists, ...) are left
+unbound. `/` jumps to Search from the other tabs. notmpc adds
 `t` (play next), `F` (follow the highlight), `V` (visualizer on/off), `[` /
 `]` (visualizer delay), `H`/`L` (collapse/expand all albums), `h`/`l` on the
 queue (collapse/expand the album under the cursor), Home/End, and Del.
@@ -250,10 +253,18 @@ in italics.
   and visualizer-only frames redraw just the visualizer.
 - `src/config.rs` / `src/keys.rs`: config file, theme, rmpc-style keymap.
 - `src/meta.rs`: display metadata, inferred from the path for untagged files.
-- `src/app.rs` holds state and actions, `src/ui.rs` draws; `src/art.rs` fetches covers
-  (`readpicture`, then `albumart`), decodes them with notcurses' ffmpeg
-  backend, and blits them onto their own planes — pixel graphics when the
-  terminal supports them, half-blocks otherwise.
+- `src/app.rs` holds state and actions, `src/ui.rs` draws; `src/overlay.rs`
+  is the panels (help, song info, outputs, decoders).
+- `src/queue.rs`: a song list as shown (album groups, folding, cursor,
+  marks), for the queue and search results, plus follow mode's moves.
+- `src/browser.rs` (Directories), `src/search.rs` (Search).
+- `src/enqueue.rs`: adding songs, shared by the UI and `src/cli.rs` (the
+  command line).
+- `src/art.rs` fetches covers (`readpicture`, then `albumart`), decodes
+  them with notcurses' ffmpeg backend, and blits them onto their own planes:
+  pixel graphics when the terminal supports them, half-blocks otherwise.
+- `src/viz.rs`: the spectrum analyser (FIFO reader thread, FFT, bands).
+- `src/pixelbar.rs`: the optional pixel progress bar.
 
 ## License
 

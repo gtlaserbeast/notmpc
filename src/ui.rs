@@ -3,12 +3,14 @@
 //! ```text
 //! [Playing]                  Kiska                    Volume: ▁▂▃▅▇ 100%
 //! 2:51 / 5:25 (731 kbps, FLAC 16/44.1)  Artist - Album   Repeat / Random …
-//! (──────────────󱢜                                                       )
+//! ⠶⠶⠶⠶⠶⠶⠶⠶⠶⠶⠶⠶⠶⠶⢾⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤
 //!                    Queue    Directories    Search
-//! [ album art ] │ PACIFIC (2013) · Various ─────────── 8 tracks · 42:17
-//!               │ ▶ 7 Kiska                Tatsuro Yamashita        5:25
+//! [ album art ]   PACIFIC (2013) · Various ─────────── 8 tracks · 42:17
+//!                 ▶ 7 Kiska                Tatsuro Yamashita        5:25
 //! message / prompt                       46 songs · 3:12:05 · 1:04:12 left
 //! ```
+//!
+//! The spectrum sits behind the first three rows, on a plane of its own.
 
 use std::time::Duration;
 

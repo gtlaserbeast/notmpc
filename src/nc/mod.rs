@@ -22,7 +22,6 @@ use anyhow::{Result, bail};
 
 /// Synthesized key codes. notcurses defines these with the function-like
 /// `preterunicode()` macro, which bindgen can't evaluate.
-#[allow(dead_code)] // the rest are for the library view
 pub mod key {
     const BASE: u32 = 1_115_000;
     pub const UP: u32 = BASE + 2;

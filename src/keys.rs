@@ -296,7 +296,6 @@ pub enum Ctx {
     /// queue, then navigation, then global
     Queue,
     /// navigation, then global
-    #[allow(dead_code)] // the Directories tab
     List,
     /// global only
     Global,
@@ -358,20 +357,18 @@ impl Keymap {
     }
 }
 
-/// rmpc 0.11's default keybindings (`rmpc config`). Tabs notmpc doesn't
-/// have are dropped and Search moves to 3. notmpc additions are marked.
+/// rmpc 0.11's default keybindings (`rmpc config`). Tabs and actions
+/// notmpc doesn't have are dropped (they still parse, so rmpc config
+/// snippets load) and Search moves to 3. notmpc additions are marked.
 const DEFAULTS: &[(&str, &[(&str, &str)])] = &[
     (
         "global",
         &[
             ("q", "Quit"),
             ("?", "ShowHelp"),
-            (":", "CommandMode"),
             ("oI", "ShowCurrentSongInfo"),
             ("oo", "ShowOutputs"),
             ("op", "ShowDecoders"),
-            ("od", "ShowDownloads"),
-            ("oP", "Partition()"),
             ("z", "ToggleRepeat"),
             ("x", "ToggleRandom"),
             ("c", "ToggleConsume"),
@@ -393,7 +390,6 @@ const DEFAULTS: &[(&str, &[(&str, &str)])] = &[
             ("3", r#"SwitchToTab("Search")"#),
             ("<C-u>", "Update"),
             ("<C-U>", "Rescan"),
-            ("R", "AddRandom"),
             // notmpc
             ("F", "ToggleFollow"),
             ("V", "ToggleVisualizer"),
@@ -436,18 +432,11 @@ const DEFAULTS: &[(&str, &[(&str, &str)])] = &[
             ("<Space>", "Select"),
             ("<C-Space>", "InvertSelection"),
             ("/", "EnterSearch"),
-            ("n", "NextResult"),
-            ("N", "PreviousResult"),
             ("a", "Add"),
             ("A", "AddAll"),
             ("D", "Delete"),
-            ("<C-r>", "Rename"),
             ("i", "FocusInput"),
             ("oi", "ShowInfo"),
-            ("<C-z>", "ContextMenu()"),
-            ("<C-s>s", "Save(kind: Modal(all: false, duplicates_strategy: Ask))"),
-            ("<C-s>a", "Save(kind: Modal(all: true, duplicates_strategy: Ask))"),
-            ("r", "Rate()"),
             // notmpc
             ("t", "PlayNext"),
             ("C", "JumpToCurrent"),
@@ -533,6 +522,7 @@ mod tests {
         // <C-u>: UpHalf in lists shadows the global Update, as in rmpc
         assert!(matches!(km.lookup(Ctx::Queue, &seq("<C-u>")), Lookup::Action(Action::UpHalf)));
         assert!(matches!(km.lookup(Ctx::Global, &seq("<C-u>")), Lookup::Action(Action::Update)));
-        assert!(matches!(km.lookup(Ctx::Queue, &seq("r")), Lookup::Action(Action::Rate)));
+        // actions notmpc lacks aren't bound by default
+        assert!(matches!(km.lookup(Ctx::Queue, &seq("r")), Lookup::None));
     }
 }

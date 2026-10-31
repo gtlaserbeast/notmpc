@@ -32,7 +32,7 @@ pub const ALL_EVENTS: &[&str] = &["playlist", "player"];
 const MESSAGE_TTL: Duration = Duration::from_secs(4);
 /// Two clicks on the same row within this count as a double-click.
 const DOUBLE_CLICK: Duration = Duration::from_millis(400);
-/// Rows the mouse wheel moves the queue cursor.
+/// Rows a mouse wheel step scrolls a list (Directories: moves its cursor).
 const WHEEL_ROWS: isize = 3;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -691,6 +691,11 @@ impl<'nc> App<'nc> {
                 Some((t, _)) => self.set_tab(*t)?,
                 None => self.say(format!("no tab named {name:?}")),
             },
+            // `/` outside Search: go there and type
+            EnterSearch => {
+                self.set_tab(Tab::Search)?;
+                self.search.editing = true;
+            }
             Update => {
                 self.mpd("update")?;
                 self.say("updating database…");
