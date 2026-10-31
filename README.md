@@ -266,6 +266,12 @@ in italics.
 - `src/viz.rs`: the spectrum analyser (FIFO reader thread, FFT, bands).
 - `src/pixelbar.rs`: the optional pixel progress bar.
 
+## Tests
+
+`cargo test` runs the unit tests. `tests/terminal/` has end-to-end tests
+that run notmpc in a pseudo-terminal against a private MPD with a generated
+library; see its README.
+
 ## License
 
 Licensed under either of [Apache License 2.0](LICENSE-APACHE) or
