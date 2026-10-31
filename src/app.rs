@@ -2,7 +2,6 @@
 //! queue's display state lives in `queue.rs`.
 
 use std::cell::RefCell;
-use std::path::PathBuf;
 use std::collections::HashSet;
 use std::time::{Duration, Instant};
 
@@ -19,7 +18,7 @@ use crate::nc::{Input, Mouse, Nc, OwnedPlane};
 use crate::overlay::Overlay;
 use crate::scrobble::Scrobble;
 use crate::search::{Edit, Search};
-use crate::seekbar::{self, SeekBar};
+use crate::pixelbar::PixelBar;
 use crate::viz::Visualizer;
 use crate::queue::{Displaced, Queue, Row};
 
@@ -144,8 +143,8 @@ pub struct App<'nc> {
     pub(crate) overlay: Option<Overlay>,
     pub(crate) scrobble: Scrobble,
     pub(crate) overlay_plane: Option<OwnedPlane<'nc>>,
-    /// The waveform progress bar; None when off or the files aren't local.
-    pub(crate) seekbar: Option<SeekBar<'nc>>,
+    /// The progress bar in pixels; None for the symbol bar.
+    pub(crate) pixel_bar: Option<PixelBar<'nc>>,
     pub(crate) viz: Option<Visualizer>,
     /// Whether the spectrum is drawn (`viz` stays alive once started).
     pub(crate) viz_on: bool,
@@ -158,6 +157,7 @@ pub struct App<'nc> {
 
 impl<'nc> App<'nc> {
     pub fn new(nc: &'nc Nc, cfg: Config, conn: Conn) -> Result<Self> {
+        let pixel_bar = if cfg.pixel_progress { PixelBar::new(nc) } else { None };
         let mut app = Self {
             nc,
             queue: Queue::new(cfg.group_by_album),
@@ -185,7 +185,7 @@ impl<'nc> App<'nc> {
             overlay: None,
             scrobble: Scrobble::new(),
             overlay_plane: None,
-            seekbar: None,
+            pixel_bar,
             viz: None,
             viz_on: false,
             header_plane: None,
@@ -197,15 +197,6 @@ impl<'nc> App<'nc> {
         }
         app.update(ALL_EVENTS)?;
         app.scrobble.check_channel(&mut app.conn);
-        if app.cfg.waveform {
-            // Only reported to local clients; without it there are no files.
-            let dir = app.conn.command("config").ok().and_then(|c| {
-                c.into_iter().find(|(k, _)| k == "music_directory").map(|(_, v)| PathBuf::from(v))
-            });
-            if dir.is_some() {
-                app.seekbar = Some(SeekBar::new(nc, dir));
-            }
-        }
         app.scrobble.poll();
         if let Some(cur) = app.current_pos() {
             app.queue.sel = app.queue.row_of_song(cur);
@@ -217,14 +208,21 @@ impl<'nc> App<'nc> {
         self.status.state == State::Play && self.offline.is_none()
     }
 
+    /// Forces every image to be re-sent on the next draw. notcurses clears
+    /// the screen on a resize, and kitty drops its images with it, even
+    /// when the size didn't change and so nothing would be redrawn.
+    pub fn forget_images(&mut self) {
+        self.art.hide();
+        self.preview_art.hide();
+        if let Some(bar) = self.pixel_bar.as_mut() {
+            bar.hide();
+        }
+    }
+
     /// How long the main loop may wait for input before redrawing.
     pub fn frame_interval(&self) -> Duration {
-        let rider = self.seekbar.as_ref().is_some_and(|s| s.animating(self.is_playing()));
         if self.viz_on && self.viz.as_ref().is_some_and(Visualizer::active) {
-            let viz = Duration::from_secs(1) / self.cfg.visualizer_fps;
-            if rider { viz.min(seekbar::rider_interval()) } else { viz }
-        } else if rider {
-            seekbar::rider_interval()
+            Duration::from_secs(1) / self.cfg.visualizer_fps
         } else if self.is_playing() {
             Duration::from_millis(250)
         } else {

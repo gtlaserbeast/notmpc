@@ -166,9 +166,9 @@ pub struct Config {
     pub follow_cursor: bool,
     /// How often to refresh bitrate and position while playing.
     pub status_interval: Duration,
-    /// The progress bar as the track's waveform with a rider (needs the
-    /// music files locally); false for the one-line bar.
-    pub waveform: bool,
+    /// The progress bar in pixels when the terminal has pixel graphics;
+    /// false for the symbol bar (`progress_symbols`).
+    pub pixel_progress: bool,
     /// Spectrum behind the header, fed by MPD's `fifo` output.
     pub visualizer: bool,
     pub visualizer_fifo: PathBuf,
@@ -191,7 +191,7 @@ impl Default for Config {
             group_by_album: true,
             follow_cursor: true,
             status_interval: Duration::from_millis(1000),
-            waveform: true,
+            pixel_progress: true,
             visualizer: true,
             visualizer_fifo: env::var_os("XDG_RUNTIME_DIR")
                 .map_or_else(|| PathBuf::from("/tmp"), PathBuf::from)
@@ -214,7 +214,7 @@ struct File {
     group_by_album: Option<bool>,
     follow_cursor: Option<bool>,
     status_update_interval_ms: Option<u64>,
-    waveform: Option<bool>,
+    pixel_progress: Option<bool>,
     visualizer: Option<bool>,
     visualizer_fifo: Option<String>,
     visualizer_rows: Option<u32>,
@@ -294,8 +294,8 @@ impl Config {
         if let Some(v) = file.visualizer {
             cfg.visualizer = v;
         }
-        if let Some(v) = file.waveform {
-            cfg.waveform = v;
+        if let Some(v) = file.pixel_progress {
+            cfg.pixel_progress = v;
         }
         if let Some(v) = file.visualizer_fifo {
             cfg.visualizer_fifo = PathBuf::from(v);

@@ -58,21 +58,14 @@ one album in different folders stay separate, labelled with the folder.
 Mouse: click the query line to edit, a result to select, double-click to
 queue and play, the ▾/▸ arrow to fold.
 
-## Waveform progress bar
+## Progress bar
 
-The progress bar is the track's waveform, two rows tall: the loudness
-envelope mirrored around the middle, the played part orange (tinted toward
-the cover's colours), the rest translucent grey, a lime playhead, and a
-pixel-art Omnium Cargo riding it — rising with the music, wheels turning.
-Click anywhere on it to seek.
-
-Tracks are decoded once on a low-priority thread (a 59-minute FLAC takes
-about 2 s) and cached in `~/.cache/notmpc/waveforms`; until a track is
-ready the plain bar shows. It needs the music files locally (MPD's
-`music_directory`, which MPD only tells local clients). Without pixel
-graphics it's drawn in braille and there's no rider. `waveform = false`
-brings back the one-line bar. Measured with a kitty-like terminal at
-190×45: ~1.5% of a core, ~26 KiB/s to the terminal.
+With pixel graphics (kitty, sixel terminals) the progress bar is a thin
+rounded track drawn in pixels: orange behind you, grey ahead, a lime thumb
+at the playhead. It's one small image, re-sent only when the thumb moves
+(at most once a second); click anywhere on it to seek. Without pixel
+graphics, or with `pixel_progress = false`, it's the rmpc-style symbol bar
+(`progress_symbols`).
 
 ## Visualizer
 

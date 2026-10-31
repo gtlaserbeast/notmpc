@@ -15,6 +15,7 @@ use std::marker::PhantomData;
 use std::ops::{Deref, DerefMut};
 use std::path::Path;
 use std::ptr;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use anyhow::{Result, bail};
@@ -24,7 +25,6 @@ use anyhow::{Result, bail};
 #[allow(dead_code)] // the rest are for the library view
 pub mod key {
     const BASE: u32 = 1_115_000;
-    pub const RESIZE: u32 = BASE + 1;
     pub const UP: u32 = BASE + 2;
     pub const RIGHT: u32 = BASE + 3;
     pub const DOWN: u32 = BASE + 4;
@@ -110,6 +110,12 @@ impl Input {
     }
 }
 
+static RESIZED: AtomicBool = AtomicBool::new(false);
+
+extern "C" fn on_resize(_: libc::c_int) {
+    RESIZED.store(true, Ordering::Relaxed);
+}
+
 pub struct Nc {
     raw: *mut sys::notcurses,
     /// The terminal's default foreground. Glyphs in the "default" colour
@@ -121,7 +127,8 @@ pub struct Nc {
 impl Nc {
     pub fn new() -> Result<Self> {
         let opts = sys::notcurses_options {
-            flags: sys::NCOPTION_SUPPRESS_BANNERS as u64,
+            // See `take_resize`.
+            flags: (sys::NCOPTION_SUPPRESS_BANNERS | sys::NCOPTION_NO_WINCH_SIGHANDLER) as u64,
             ..Default::default()
         };
         // SAFETY: opts is valid for the call; a null FILE* means stdout.
@@ -136,7 +143,24 @@ impl Nc {
         } else {
             Color::Palette(7)
         };
+        // SAFETY: the handler only stores to an atomic.
+        unsafe {
+            let mut sa: libc::sigaction = std::mem::zeroed();
+            sa.sa_sigaction = on_resize as extern "C" fn(libc::c_int) as libc::sighandler_t;
+            sa.sa_flags = libc::SA_RESTART;
+            libc::sigaction(libc::SIGWINCH, &sa, ptr::null_mut());
+            libc::sigaction(libc::SIGCONT, &sa, ptr::null_mut());
+        }
         Ok(Self { raw, default_fg })
+    }
+
+    /// Whether the terminal was resized (or we were resumed) since the last
+    /// call; then call `refresh` before drawing. notcurses 3.0.8's own
+    /// handling clears the screen *after* the next render, which in kitty
+    /// frees the images just drawn, and only re-places them; and its
+    /// NCKEY_RESIZE isn't delivered until the next keypress.
+    pub fn take_resize(&self) -> bool {
+        RESIZED.swap(false, Ordering::Relaxed)
     }
 
     pub fn stdplane(&self) -> Plane<'_> {
@@ -186,14 +210,13 @@ impl Nc {
         (cy > 0 && cx > 0).then_some((cy, cx))
     }
 
-    /// Draws `v` onto `plane` itself, unscaled: pixel for pixel, or (no
-    /// pixel graphics) 2x4 pixels per cell in braille. A later blit onto
-    /// the same plane replaces it.
-    pub fn blit_onto(&self, v: &Visual, plane: &mut Plane, pixel: bool) -> Result<()> {
+    /// Draws `v` onto `plane` itself, pixel for pixel, unscaled. A later
+    /// blit onto the same plane replaces it.
+    pub fn blit_onto(&self, v: &Visual, plane: &mut Plane) -> Result<()> {
         let opts = sys::ncvisual_options {
             n: plane.raw,
             scaling: sys::ncscale_e_NCSCALE_NONE,
-            blitter: if pixel { sys::ncblitter_e_NCBLIT_PIXEL } else { sys::ncblitter_e_NCBLIT_BRAILLE },
+            blitter: sys::ncblitter_e_NCBLIT_PIXEL,
             ..Default::default()
         };
         // SAFETY: raw, v and plane are live; opts is valid for the call.
@@ -238,7 +261,7 @@ impl Nc {
         Ok(())
     }
 
-    /// Picks up a new terminal size after `key::RESIZE`.
+    /// Picks up a new terminal size and repaints from scratch.
     pub fn refresh(&self) -> Result<()> {
         // SAFETY: raw is live; null out-params are allowed.
         if unsafe { sys::notcurses_refresh(self.raw, ptr::null_mut(), ptr::null_mut()) } != 0 {
@@ -341,12 +364,6 @@ impl Plane<'_> {
         }
     }
 
-    /// Moves the plane to (y, x) relative to its parent.
-    pub fn move_yx(&mut self, y: u32, x: u32) {
-        // SAFETY: raw is a live plane.
-        unsafe { sys::ncplane_move_yx(self.raw, y as i32, x as i32) };
-    }
-
     /// Raises the plane above every other.
     pub fn move_top(&mut self) {
         // SAFETY: raw is a live plane.
@@ -445,27 +462,6 @@ impl Visual {
             bail!("ncvisual_from_rgba failed");
         }
         Ok(Self { raw })
-    }
-
-    /// The average colour of a coarse grid of pixels (0xRRGGBB).
-    pub fn average_rgb(&self) -> Option<u32> {
-        let (h, w) = self.size()?;
-        let (mut r, mut g, mut b, mut n) = (0u64, 0u64, 0u64, 0u64);
-        for gy in 0..16 {
-            for gx in 0..16 {
-                let mut px = 0u32;
-                let (y, x) = (gy * h / 16, gx * w / 16);
-                // SAFETY: raw is live; (y, x) is inside the image.
-                if unsafe { sys::ncvisual_at_yx(self.raw, y, x, &mut px) } == 0 {
-                    // notcurses pixels are RGBA in memory order (little-endian ABGR)
-                    r += u64::from(px & 0xff);
-                    g += u64::from((px >> 8) & 0xff);
-                    b += u64::from((px >> 16) & 0xff);
-                    n += 1;
-                }
-            }
-        }
-        (n > 0).then(|| (((r / n) << 16) | ((g / n) << 8) | (b / n)) as u32)
     }
 
     /// Pixel size (height, width).

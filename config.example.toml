@@ -8,7 +8,7 @@ art_width = 45        # % of the queue tab given to album art
 group_by_album = true # false = rmpc's flat Artist/Title/Album/Date table
 follow_cursor = true  # the song under the queue cursor plays next (F toggles)
 status_update_interval_ms = 1000  # bitrate / position refresh while playing
-waveform = true       # waveform progress bar with a rider (needs local files)
+pixel_progress = true # pixel progress bar (false: progress_symbols)
 visualizer = true     # spectrum behind the header (needs MPD's fifo output)
 # visualizer_fifo = "/run/user/1000/mpd/visualizer.fifo"
 visualizer_rows = 3   # 1-3

@@ -9,14 +9,12 @@ mod meta;
 mod mpd;
 mod nc;
 mod overlay;
+mod pixelbar;
 mod queue;
 mod scrobble;
 mod search;
-mod seekbar;
 mod ui;
 mod viz;
-mod wavebar;
-mod waveform;
 
 use std::sync::mpsc::{self, Receiver};
 use std::thread;
@@ -27,7 +25,7 @@ use anyhow::Result;
 use app::App;
 use config::Config;
 use mpd::{Conn, Target};
-use nc::{Event, Nc, key};
+use nc::{Event, Nc};
 
 /// How often to try reaching MPD again after losing it.
 const RETRY: Duration = Duration::from_secs(1);
@@ -90,11 +88,15 @@ fn main() -> Result<()> {
     nc.enable_mouse();
     let mut app = App::new(&nc, cfg, conn)?;
     loop {
+        if nc.take_resize() {
+            nc.refresh()?;
+            // the refresh cleared the screen, and kitty its images with it
+            app.forget_images();
+        }
         app.draw()?;
         nc.render()?;
 
         match nc.get(app.frame_interval())? {
-            Some(Event::Key(i)) if i.id == key::RESIZE => nc.refresh()?,
             // MPD trouble is shown in the footer; it never ends the session.
             Some(Event::Key(i)) => match app.handle(i) {
                 Ok(false) => return Ok(()),

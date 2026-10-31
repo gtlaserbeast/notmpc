@@ -70,10 +70,6 @@ impl<'nc> Art<'nc> {
         self.visual = visual;
     }
 
-    pub fn visual(&self) -> Option<&Visual> {
-        self.visual.as_deref()
-    }
-
     pub fn has_image(&self) -> bool {
         self.visual.is_some()
     }
@@ -94,7 +90,9 @@ impl<'nc> Art<'nc> {
         Ok(())
     }
 
-    fn hide(&mut self) {
+    /// Drops the image so the next `show` re-sends it (after the terminal
+    /// cleared the screen, say).
+    pub fn hide(&mut self) {
         self.image = None;
         self.frame = None;
         self.shown = None;
