@@ -172,15 +172,27 @@ impl Visualizer {
         (0..n)
             .map(|i| {
                 let (lo, hi) = (edge(i), edge(i + 1));
-                let (a, b) = ((lo / hz_per_bin) as usize, (hi / hz_per_bin).ceil() as usize);
-                // Narrow low bands can fall between bins: take the nearest.
-                let peak = mag[a.min(mag.len() - 1)..b.clamp(a + 1, mag.len())].iter().copied().fold(0.0, f32::max);
                 let centre = (lo * hi).sqrt();
+                let peak = band_level(&mag, lo / hz_per_bin, hi / hz_per_bin, centre / hz_per_bin);
                 let db = 20.0 * peak.max(1e-9).log10() + TILT_DB_PER_OCTAVE * (centre / 1000.0).log2();
                 ((db - FLOOR_DB) / RANGE_DB).clamp(0.0, 1.0)
             })
             .collect()
     }
+}
+
+/// A band's magnitude from `mag`, with its edges and centre in bins: the
+/// loudest bin in it, or, for a band narrower than two bins (the bass,
+/// with many bars), the spectrum read between bins at its centre, so
+/// neighbouring bars don't all copy the same bin.
+fn band_level(mag: &[f32], lo: f32, hi: f32, centre: f32) -> f32 {
+    let last = mag.len() - 1;
+    if hi - lo < 2.0 {
+        let f = centre.min(last as f32);
+        let (i, k) = (f as usize, f.fract());
+        return mag[i] + (mag[(i + 1).min(last)] - mag[i]) * k;
+    }
+    mag[(lo as usize).min(last)..(hi.ceil() as usize).min(mag.len())].iter().copied().fold(0.0, f32::max)
 }
 
 /// Reads s16le stereo frames forever, reopening when MPD closes the FIFO,
@@ -227,5 +239,23 @@ fn read_loop(fifo: &PathBuf, shared: &Mutex<Shared>, reading: &AtomicBool) {
             carry.drain(..frames * 4);
         }
         thread::sleep(Duration::from_millis(200));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn narrow_bands_read_between_bins() {
+        let mag = [0.0, 1.0, 3.0, 2.0, 0.5];
+        // three bands inside bin 1..2: each gets its own level
+        let l: Vec<f32> = [1.2, 1.5, 1.8].iter().map(|&c| band_level(&mag, c - 0.1, c + 0.1, c)).collect();
+        assert!(l[0] < l[1] && l[1] < l[2], "{l:?}");
+        assert!((l[1] - 2.0).abs() < 1e-6);
+        // a wide band takes its loudest bin
+        assert_eq!(band_level(&mag, 0.5, 4.0, 2.0), 3.0);
+        // past the end stays in range
+        assert_eq!(band_level(&mag, 9.0, 9.5, 9.2), 0.5);
     }
 }

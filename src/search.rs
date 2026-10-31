@@ -100,12 +100,13 @@ impl Search {
         }
         self.ran = Some(self.query.clone());
         let mut songs: Vec<Song> = Vec::new();
+        let mut seen = std::collections::HashSet::new();
         self.truncated = false;
         for filter in filters(&self.query) {
             let found = Song::parse_list(&conn.command(&format!("search {} window 0:{LIMIT}", quote(&filter)))?);
             self.truncated |= found.len() >= LIMIT;
             for s in found {
-                if !songs.iter().any(|x| x.file == s.file) {
+                if seen.insert(s.file.clone()) {
                     songs.push(s);
                 }
             }
