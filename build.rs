@@ -35,9 +35,7 @@ fn main() {
         .generate()
         .expect("bindgen failed on notcurses headers");
 
-    bindings
-        .write_to_file(out.join("bindings.rs"))
-        .expect("couldn't write bindings");
+    bindings.write_to_file(out.join("bindings.rs")).expect("couldn't write bindings");
 
     cc::Build::new()
         .file(shim.with_extension("c"))

@@ -54,8 +54,12 @@ fn add_one(conn: &mut Conn, item: &Item, pos: &str) -> Result<Option<u32>> {
 /// Every song under a database directory (or the song itself), in natural
 /// order.
 pub fn db_songs(conn: &mut Conn, uri: &str) -> Result<Vec<String>> {
-    let mut files: Vec<String> =
-        conn.command(&format!("listall {}", quote(uri)))?.into_iter().filter(|(k, _)| k == "file").map(|(_, v)| v).collect();
+    let mut files: Vec<String> = conn
+        .command(&format!("listall {}", quote(uri)))?
+        .into_iter()
+        .filter(|(k, _)| k == "file")
+        .map(|(_, v)| v)
+        .collect();
     files.sort_by(|a, b| natural_cmp(a, b));
     Ok(files)
 }

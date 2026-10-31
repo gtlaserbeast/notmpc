@@ -20,8 +20,8 @@ use crate::enqueue::{Item, Where, enqueue, natural_cmp};
 use crate::mpd::{Conn, Target};
 
 const AUDIO: &[&str] = &[
-    "flac", "mp3", "ogg", "oga", "opus", "m4a", "mp4", "aac", "wav", "aif", "aiff", "wv", "ape", "dsf", "dff",
-    "mpc", "wma",
+    "flac", "mp3", "ogg", "oga", "opus", "m4a", "mp4", "aac", "wav", "aif", "aiff", "wv", "ape", "dsf", "dff", "mpc",
+    "wma",
 ];
 
 pub fn run(at: Where, paths: &[String]) -> Result<()> {

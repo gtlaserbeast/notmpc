@@ -143,10 +143,7 @@ impl State {
     }
 
     pub fn load() -> Self {
-        Self::path()
-            .and_then(|p| fs::read_to_string(p).ok())
-            .and_then(|t| toml::from_str(&t).ok())
-            .unwrap_or_default()
+        Self::path().and_then(|p| fs::read_to_string(p).ok()).and_then(|t| toml::from_str(&t).ok()).unwrap_or_default()
     }
 
     /// Loads the state file, applies `change` and saves it; returns

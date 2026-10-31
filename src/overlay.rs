@@ -127,7 +127,9 @@ impl Overlay {
         let mut outs: Vec<Output> = Vec::new();
         for (k, v) in conn.command("outputs")? {
             match k.as_str() {
-                "outputid" => outs.push(Output { id: v.parse()?, name: String::new(), plugin: String::new(), enabled: false }),
+                "outputid" => {
+                    outs.push(Output { id: v.parse()?, name: String::new(), plugin: String::new(), enabled: false })
+                }
                 "outputname" => outs.last_mut().into_iter().for_each(|o| o.name = v.clone()),
                 "plugin" => outs.last_mut().into_iter().for_each(|o| o.plugin = v.clone()),
                 "outputenabled" => outs.last_mut().into_iter().for_each(|o| o.enabled = v == "1"),

@@ -1,3 +1,6 @@
+//! notmpc: a terminal MPD client drawn with notcurses. `notmpc` runs the
+//! UI; `notmpc add|insert PATH...` queues files for file managers.
+
 mod app;
 mod art;
 mod browser;
@@ -36,6 +39,9 @@ enum MpdEvent {
     Lost(String),
     Reconnected,
 }
+
+/// How long the UI waits for any one reply from MPD.
+const MPD_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Blocks on `idle` in a second connection and reports changes. Survives
 /// MPD restarts: on failure it reports `Lost` and reconnects.
@@ -80,7 +86,8 @@ fn main() -> Result<()> {
     // print normally.
     let cfg = Config::load()?;
     let target = Target::from_env();
-    let conn = Conn::connect(&target)?;
+    // A hung MPD must not freeze the UI; `idle` below waits as long as it likes.
+    let conn = Conn::connect_timeout(&target, MPD_TIMEOUT)?;
     let events = spawn_idle(target)?;
 
     let nc = Nc::new()?;

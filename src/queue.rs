@@ -342,6 +342,18 @@ impl Queue {
     }
 
     /// Folds the album under the cursor (on a song, the one it's in).
+    pub fn toggle_collapsed(&mut self, g: usize) {
+        let collapse = !self.collapsed.contains(&self.groups[g].key);
+        self.set_collapsed(g, collapse);
+    }
+
+    /// Moves the cursor onto `row`, if it's shown.
+    pub fn select_row(&mut self, row: Row) {
+        if let Some(i) = self.rows.iter().position(|&x| x == row) {
+            self.sel = i;
+        }
+    }
+
     pub fn collapse_selected(&mut self) {
         match self.selected() {
             Some(Row::Group(g)) => self.set_collapsed(g, true),
@@ -412,7 +424,16 @@ mod tests {
         assert_eq!(q.groups.len(), 3);
         assert_eq!(
             q.rows,
-            vec![Row::Group(0), Row::Song(0), Row::Song(1), Row::Group(1), Row::Song(2), Row::Song(3), Row::Group(2), Row::Song(4)]
+            vec![
+                Row::Group(0),
+                Row::Song(0),
+                Row::Song(1),
+                Row::Group(1),
+                Row::Song(2),
+                Row::Song(3),
+                Row::Group(2),
+                Row::Song(4)
+            ]
         );
     }
 

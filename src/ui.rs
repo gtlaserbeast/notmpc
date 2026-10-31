@@ -15,13 +15,13 @@ use std::time::Duration;
 use anyhow::Result;
 
 use crate::app::{App, Hit, List, Mode, Prompt, TABS, Tab, Target};
-use crate::queue::{Queue, Row};
 use crate::art::Rect;
 use crate::browser::Entry;
 use crate::config::{Style, Theme};
 use crate::mpd::State;
 use crate::nc::{self, BOLD, Color, ITALIC, Plane};
 use crate::pixelbar;
+use crate::queue::{Queue, Row};
 
 const FOOTER_ROWS: u32 = 1;
 /// Below this width the queue tab drops the art pane.
@@ -195,7 +195,11 @@ impl App<'_> {
         let cells: Vec<(u32, u8)> = match self.viz.as_mut().filter(|_| self.offline.is_none() && self.viz_on) {
             // brightness in four steps, so a lit cell's colour changes (and
             // is re-sent) only when its bar crosses one
-            Some(viz) => viz.frame(cols as usize).iter().map(|&b| ((b * (rows * 8) as f32).round() as u32, (b * 4.0).round() as u8)).collect(),
+            Some(viz) => viz
+                .frame(cols as usize)
+                .iter()
+                .map(|&b| ((b * (rows * 8) as f32).round() as u32, (b * 4.0).round() as u8))
+                .collect(),
             None => Vec::new(),
         };
         if !force && cells == self.viz_shown {
@@ -209,7 +213,8 @@ impl App<'_> {
                 continue;
             }
             // Dim enough for the header text on top to stay readable.
-            let c = Color::Rgb(scale(gradient(stops, x as f32 / (cols.max(2) - 1) as f32), 0.30 + 0.10 * f32::from(level)));
+            let c =
+                Color::Rgb(scale(gradient(stops, x as f32 / (cols.max(2) - 1) as f32), 0.30 + 0.10 * f32::from(level)));
             for r in 0..rows {
                 let filled = eighths.saturating_sub(r * 8).min(8);
                 if filled == 0 {
@@ -425,8 +430,7 @@ impl App<'_> {
         // configured share of the width.
         let (ch, cw) = self.nc.cell_px().unwrap_or((20, 10));
         let square = (body.rows * ch).div_ceil(cw);
-        let art_cols =
-            if body.cols >= MIN_ART_COLS { square.min(body.cols * self.cfg.art_width / 100) } else { 0 };
+        let art_cols = if body.cols >= MIN_ART_COLS { square.min(body.cols * self.cfg.art_width / 100) } else { 0 };
         if art_cols > 0 {
             let art = Rect { y: body.y, x: 0, rows: body.rows, cols: art_cols };
             if self.art.has_image() && self.overlay.is_none() {
@@ -451,7 +455,7 @@ impl App<'_> {
             self.overlay_plane = None;
             return Ok(());
         };
-        let t = self.cfg.theme.clone();
+        let t = &self.cfg.theme;
         if self.overlay_plane.as_ref().is_none_or(|pl| pl.dim_yx() != (rows, cols)) {
             self.overlay_plane = None;
             let mut pl = self.nc.new_plane(0, 0, rows, cols)?;
@@ -462,7 +466,8 @@ impl App<'_> {
         let mut pl = self.overlay_plane.take().expect("created above");
         pl.erase();
 
-        let label_w = o.lines.iter().filter(|l| !l.heading).map(|l| nc::width(&l.label)).max().unwrap_or(0).min(28) as u32;
+        let label_w =
+            o.lines.iter().filter(|l| !l.heading).map(|l| nc::width(&l.label)).max().unwrap_or(0).min(28) as u32;
         let content_w = o
             .lines
             .iter()
@@ -680,7 +685,16 @@ impl App<'_> {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn draw_group_header(&self, p: &mut Plane, y: u32, x: u32, w: u32, (kind, g): (List, usize), hl: Highlight, t: &Theme) {
+    fn draw_group_header(
+        &self,
+        p: &mut Plane,
+        y: u32,
+        x: u32,
+        w: u32,
+        (kind, g): (List, usize),
+        hl: Highlight,
+        t: &Theme,
+    ) {
         let q = self.list(kind);
         let group = &q.groups[g];
         let m = &q.metas[q.order[group.start]];
@@ -847,7 +861,16 @@ impl App<'_> {
         if let Some(parent) = self.browser.parent() {
             let (entries, sel) = (parent.entries.clone(), parent.sel);
             let scroll = sel.saturating_sub(h as usize / 2);
-            self.draw_entries(p, Rect { y: top, x: 0, rows: h, cols: w0 }, &entries, Some(sel), scroll, 0, t.browse, &t);
+            self.draw_entries(
+                p,
+                Rect { y: top, x: 0, rows: h, cols: w0 },
+                &entries,
+                Some(sel),
+                scroll,
+                0,
+                t.browse,
+                &t,
+            );
         }
 
         let cur = self.browser.current();
@@ -889,7 +912,11 @@ impl App<'_> {
             });
             let base = if is_playing { t.current } else { t.text };
             let selected = sel == Some(i);
-            let st = if selected { Style { bg: sel_style.bg, ..if sel_style.fg == Color::Default { base } else { sel_style } } } else { base };
+            let st = if selected {
+                Style { bg: sel_style.bg, ..if sel_style.fg == Color::Default { base } else { sel_style } }
+            } else {
+                base
+            };
             if selected {
                 put(p, y, area.x, &" ".repeat(area.cols as usize), st);
             }
@@ -965,7 +992,8 @@ impl App<'_> {
                     if y >= bottom {
                         break;
                     }
-                    let segs: Segs = vec![(format!("{label}: "), t.label), (value.clone(), italic_if(t.text, m.inferred))];
+                    let segs: Segs =
+                        vec![(format!("{label}: "), t.label), (value.clone(), italic_if(t.text, m.inferred))];
                     put_segs(p, y, area.x + 1, w, &segs);
                     y += 1;
                 }
@@ -996,7 +1024,16 @@ impl App<'_> {
                 }
                 let rows = bottom.saturating_sub(y);
                 if rows > 0 {
-                    self.draw_entries(p, Rect { y, x: area.x, rows, cols: area.cols }, &pv.entries, None, 0, 2, t.cursor, t);
+                    self.draw_entries(
+                        p,
+                        Rect { y, x: area.x, rows, cols: area.cols },
+                        &pv.entries,
+                        None,
+                        0,
+                        2,
+                        t.cursor,
+                        t,
+                    );
                 }
             }
             None => {}

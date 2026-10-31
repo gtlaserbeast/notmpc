@@ -9,17 +9,17 @@ use anyhow::Result;
 
 use crate::art::Art;
 use crate::browser::{Browser, Entry};
-use crate::enqueue::{self, Item, Where};
 use crate::config::Config;
+use crate::enqueue::{self, Item, Where};
 use crate::keys::{Action, Ctx, Lookup};
 use crate::meta::Meta;
 use crate::mpd::{Ack, Conn, Song, State, Status};
 use crate::nc::{Input, Mouse, Nc, OwnedPlane};
 use crate::overlay::Overlay;
-use crate::search::{Edit, Search};
 use crate::pixelbar::PixelBar;
-use crate::viz::Visualizer;
 use crate::queue::{Displaced, Queue, Row};
+use crate::search::{Edit, Search};
+use crate::viz::Visualizer;
 
 /// Idle subsystems that mean the queue changed / status may have changed.
 const QUEUE_EVENTS: &[&str] = &["playlist"];
@@ -42,11 +42,7 @@ pub enum Tab {
     Search,
 }
 
-pub const TABS: [(Tab, &str); 3] = [
-    (Tab::Queue, "Queue"),
-    (Tab::Directories, "Directories"),
-    (Tab::Search, "Search"),
-];
+pub const TABS: [(Tab, &str); 3] = [(Tab::Queue, "Queue"), (Tab::Directories, "Directories"), (Tab::Search, "Search")];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Mode {
@@ -306,7 +302,8 @@ impl<'nc> App<'nc> {
         }
         self.restore()?;
         let Some(cur) = self.status.song_id.and_then(|id| self.queue.pos_of_id(id)) else { return Ok(()) };
-        let cmds: Vec<String> = fresh.iter().enumerate().map(|(k, id)| format!("moveid {id} {}", cur + 1 + k)).collect();
+        let cmds: Vec<String> =
+            fresh.iter().enumerate().map(|(k, id)| format!("moveid {id} {}", cur + 1 + k)).collect();
         self.conn.command_list(&cmds)?;
         self.fetch_queue()
     }
@@ -573,7 +570,11 @@ impl<'nc> App<'nc> {
                 return Ok(true);
             }
             ShowCurrentSongInfo | ShowInfo => {
-                let file = if action == ShowInfo { self.selected_file() } else { self.song.as_ref().map(|(s, _)| s.file.clone()) };
+                let file = if action == ShowInfo {
+                    self.selected_file()
+                } else {
+                    self.song.as_ref().map(|(s, _)| s.file.clone())
+                };
                 match file {
                     Some(f) => self.overlay = Some(Overlay::info(&mut self.conn, &f)?),
                     None => self.say("no song there"),
@@ -781,12 +782,8 @@ impl<'nc> App<'nc> {
                     && let Some(Entry::Song(s, _)) = b.selected()
                 {
                     // Enter on a song: queue it and play it now.
-                    let uri = s.file.clone();
-                    self.restore()?;
-                    let pairs = self.conn.command(&format!("addid {}", crate::mpd::quote(&uri)))?;
-                    if let Some((_, id)) = pairs.iter().find(|(k, _)| k == "Id") {
-                        self.mpd(&format!("playid {id}"))?;
-                    }
+                    let item = vec![s.file.clone()];
+                    self.enqueue(&[item], Where::End, true)?;
                 }
             }
             Add | PlayNext => {
@@ -819,14 +816,24 @@ impl<'nc> App<'nc> {
         for u in uris {
             items.extend(enqueue::db_songs(&mut self.conn, u)?.into_iter().map(|f| vec![f]));
         }
+        self.enqueue(&items, at, false)?;
+        self.browser.marked.clear();
+        Ok(())
+    }
+
+    /// Adds `items` (`at` the end or next), optionally playing the first
+    /// right away, and says so in the footer.
+    fn enqueue(&mut self, items: &[Item], at: Where, play: bool) -> Result<()> {
         if items.is_empty() {
             return Ok(());
         }
         // Insert positions are relative to the real order.
         self.restore()?;
-        let n = enqueue::enqueue(&mut self.conn, &items, at)?.len();
-        self.browser.marked.clear();
-        self.say_queued(n, at);
+        let ids = enqueue::enqueue(&mut self.conn, items, at)?;
+        if play && let Some(id) = ids.first() {
+            self.mpd(&format!("playid {id}"))?;
+        }
+        self.say_queued(ids.len(), at);
         Ok(())
     }
 
@@ -868,22 +875,22 @@ impl<'nc> App<'nc> {
             r.selected_songs()
         };
         let items: Vec<Item> = picked.iter().map(|&q| vec![r.songs[q].file.clone()]).collect();
-        if items.is_empty() {
-            return Ok(());
-        }
-        self.restore()?;
-        let ids = enqueue::enqueue(&mut self.conn, &items, at)?;
-        if play && let Some(id) = ids.first() {
-            self.mpd(&format!("playid {id}"))?;
-        }
+        self.enqueue(&items, at, play)?;
         self.search.results.marked.clear();
-        self.say_queued(ids.len(), at);
         Ok(())
     }
 
     fn say_queued(&mut self, n: usize, at: Where) {
         let verb = if at == Where::Next { "playing next" } else { "queued" };
         self.say(format!("{verb}: {n} song{}", if n == 1 { "" } else { "s" }));
+    }
+
+    /// Whether a click on `t` completes a double-click; remembers it as
+    /// the first click otherwise.
+    fn double_click(&mut self, t: Target) -> bool {
+        let double = self.last_click.is_some_and(|(at, prev)| prev == t && at.elapsed() < DOUBLE_CLICK);
+        self.last_click = if double { None } else { Some((Instant::now(), t)) };
+        double
     }
 
     pub fn click(&mut self, m: Mouse) -> Result<()> {
@@ -908,19 +915,30 @@ impl<'nc> App<'nc> {
             }
             return Ok(());
         }
-        let (wheel_up, wheel_down) = (m.button == 4, m.button == 5);
-        let double = |t: Target, last: Option<(Instant, Target)>| {
-            last.is_some_and(|(at, prev)| prev == t && at.elapsed() < DOUBLE_CLICK)
+        let wheel = match m.button {
+            4 => -WHEEL_ROWS,
+            5 => WHEEL_ROWS,
+            _ => 0,
         };
-        match hit.map(|h| (h, h.target)) {
-            Some((_, Target::Volume)) if wheel_up => _ = self.act(Action::VolumeUp)?,
-            Some((_, Target::Volume)) if wheel_down => _ = self.act(Action::VolumeDown)?,
-            _ if (wheel_up || wheel_down) && self.tab == Tab::Directories => {
-                self.browser.move_sel(if wheel_up { -WHEEL_ROWS } else { WHEEL_ROWS });
+        if wheel != 0 {
+            let h = self.list_height;
+            match (hit.map(|h| h.target), self.tab) {
+                (Some(Target::Volume), _) => {
+                    self.act(if wheel < 0 { Action::VolumeUp } else { Action::VolumeDown })?;
+                }
+                (_, Tab::Directories) => self.browser.move_sel(wheel),
+                // Lists scroll the view; the cursor stays put.
+                (_, Tab::Search) => self.search.results.scroll_by(wheel, h),
+                (_, Tab::Queue) => self.queue.scroll_by(wheel, h),
             }
-            Some((_, t @ Target::Entry(col, i))) if m.button == 1 => {
-                let double = double(t, self.last_click);
-                self.last_click = if double { None } else { Some((Instant::now(), t)) };
+            return Ok(());
+        }
+        if m.button != 1 {
+            return Ok(());
+        }
+        match hit.map(|h| (h, h.target)) {
+            Some((_, t @ Target::Entry(col, i))) => {
+                let double = self.double_click(t);
                 match col {
                     0 => self.browser.up(),
                     // a click in the preview opens the folder it shows
@@ -932,35 +950,15 @@ impl<'nc> App<'nc> {
                     self.act_dirs(&Action::Confirm)?;
                 }
             }
-            _ if (wheel_up || wheel_down) && self.tab == Tab::Search => {
-                let h = self.list_height;
-                self.search.results.scroll_by(if wheel_up { -WHEEL_ROWS } else { WHEEL_ROWS }, h);
-            }
-            Some((_, Target::SearchInput)) if m.button == 1 => self.search.editing = true,
-            Some((_, t @ Target::Row(List::Search, row))) if m.button == 1 => {
-                let r = &mut self.search.results;
-                if let Some(i) = r.rows.iter().position(|&x| x == row) {
-                    r.sel = i;
-                }
+            Some((_, Target::SearchInput)) => self.search.editing = true,
+            Some((_, t @ Target::Row(List::Search, row))) => {
+                self.search.results.select_row(row);
                 self.search.editing = false;
-                if double(t, self.last_click) {
-                    self.last_click = None;
+                if self.double_click(t) {
                     self.queue_results(false, Where::End, true)?;
-                } else {
-                    self.last_click = Some((Instant::now(), t));
                 }
             }
-            Some((_, Target::Caret(List::Search, g))) if m.button == 1 => {
-                let r = &mut self.search.results;
-                let collapse = !r.collapsed.contains(&r.groups[g].key);
-                r.set_collapsed(g, collapse);
-            }
-            // The wheel scrolls the view; the cursor stays put.
-            _ if (wheel_up || wheel_down) && self.tab == Tab::Queue => {
-                let h = self.list_height;
-                self.queue.scroll_by(if wheel_up { -WHEEL_ROWS } else { WHEEL_ROWS }, h);
-            }
-            _ if m.button != 1 => {}
+            Some((_, Target::Caret(List::Search, g))) => self.search.results.toggle_collapsed(g),
             Some((_, Target::Tab(t))) => self.set_tab(t)?,
             Some((_, Target::FoldAll)) => {
                 let all = self.queue.groups.iter().all(|g| self.queue.collapsed.contains(&g.key));
@@ -983,23 +981,14 @@ impl<'nc> App<'nc> {
                 };
                 self.act(a)?;
             }
-            Some((_, Target::Caret(List::Queue, g))) => {
-                let collapse = !self.queue.collapsed.contains(&self.queue.groups[g].key);
-                self.queue.set_collapsed(g, collapse);
-            }
+            Some((_, Target::Caret(List::Queue, g))) => self.queue.toggle_collapsed(g),
             Some((_, t @ Target::Row(List::Queue, row))) => {
-                if let Some(r) = self.queue.rows.iter().position(|&x| x == row) {
-                    self.queue.sel = r;
-                }
-                if double(t, self.last_click) {
-                    self.last_click = None;
+                self.queue.select_row(row);
+                if self.double_click(t) {
                     self.play_selected()?;
-                } else {
-                    self.last_click = Some((Instant::now(), t));
+                } else if self.follow && self.can_follow() {
                     // A click moves the highlight too: that song plays next.
-                    if self.follow && self.can_follow() {
-                        self.play_next()?;
-                    }
+                    self.play_next()?;
                 }
             }
             _ => {}

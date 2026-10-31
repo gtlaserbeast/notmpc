@@ -62,31 +62,56 @@ pub type Pairs = Vec<(String, String)>;
 /// `connection_timeout` (60s by default) without a command, and restarts.
 pub struct Conn {
     target: Target,
+    /// How long a reply may take; None waits forever (for `idle`).
+    timeout: Option<Duration>,
     reader: BufReader<Box<dyn Read + Send>>,
     writer: Box<dyn Write + Send>,
 }
 
 impl Conn {
+    /// A connection whose replies may take any time, as `idle`'s do.
     pub fn connect(target: &Target) -> Result<Self> {
+        Self::open(target, None)
+    }
+
+    /// A connection that gives up on a reply after `timeout`, so a hung
+    /// server can't freeze the caller.
+    pub fn connect_timeout(target: &Target, timeout: Duration) -> Result<Self> {
+        Self::open(target, Some(timeout))
+    }
+
+    fn open(target: &Target, timeout: Option<Duration>) -> Result<Self> {
         let (r, w): (Box<dyn Read + Send>, Box<dyn Write + Send>) = match &target.addr {
             Addr::Unix(p) => {
                 let s = UnixStream::connect(p).with_context(|| format!("connecting to {}", p.display()))?;
+                s.set_read_timeout(timeout)?;
                 (Box::new(s.try_clone()?), Box::new(s))
             }
             Addr::Tcp(a) => {
                 let s = TcpStream::connect(a).with_context(|| format!("connecting to {a}"))?;
-                s.set_read_timeout(None)?;
+                s.set_read_timeout(timeout)?;
                 (Box::new(s.try_clone()?), Box::new(s))
             }
         };
-        let mut conn = Self { target: target.clone(), reader: BufReader::new(r), writer: w };
+        Self::start(target.clone(), timeout, BufReader::new(r), w)
+    }
+
+    /// Reads the greeting and logs in over an open stream.
+    fn start(
+        target: Target,
+        timeout: Option<Duration>,
+        reader: BufReader<Box<dyn Read + Send>>,
+        writer: Box<dyn Write + Send>,
+    ) -> Result<Self> {
+        let password = target.password.clone();
+        let mut conn = Self { target, timeout, reader, writer };
 
         let greeting = conn.read_line()?;
         if !greeting.starts_with("OK MPD ") {
             bail!("unexpected greeting from MPD: {greeting:?}");
         }
-        if let Some(pw) = &target.password {
-            conn.exchange(&format!("password {}", quote(pw)))?;
+        if let Some(pw) = password {
+            conn.exchange(&format!("password {}", quote(&pw)))?;
         }
         // Older servers reject this; art then just arrives in smaller chunks.
         let _ = conn.exchange(&format!("binarylimit {BINARY_LIMIT}"));
@@ -132,24 +157,23 @@ impl Conn {
                 return Ok((!data.is_empty()).then_some(data));
             };
             data.extend_from_slice(&chunk);
-            let size = pairs
-                .iter()
-                .find(|(k, _)| k == "size")
-                .and_then(|(_, v)| v.parse::<usize>().ok())
-                .unwrap_or(0);
+            let size = pairs.iter().find(|(k, _)| k == "size").and_then(|(_, v)| v.parse::<usize>().ok()).unwrap_or(0);
             if data.len() >= size {
                 return Ok(Some(data));
             }
         }
     }
 
-    /// Sends `cmd`. If the connection turns out to be dead, reconnects and
-    /// retries once: a dropped connection means MPD never ran the command.
+    /// Sends `cmd`. Any failure but MPD's own refusal leaves the
+    /// connection unusable (a reply may be half read), so it reconnects.
+    /// Only when MPD had dropped the connection is `cmd` retried: then it
+    /// never ran. After a timeout or a garbled reply it may have, so the
+    /// error is returned instead.
     fn request(&mut self, cmd: &str) -> Result<(Pairs, Option<Vec<u8>>)> {
         match self.exchange(cmd) {
             Err(e) if !e.is::<Ack>() => {
-                *self = Self::connect(&self.target)?;
-                self.exchange(cmd)
+                *self = Self::open(&self.target, self.timeout)?;
+                if dropped(&e) { self.exchange(cmd) } else { Err(e) }
             }
             r => r,
         }
@@ -169,9 +193,7 @@ impl Conn {
             if let Some(err) = line.strip_prefix("ACK ") {
                 return Err(Ack(err.to_owned()).into());
             }
-            let (k, v) = line
-                .split_once(": ")
-                .ok_or_else(|| anyhow!("malformed line from MPD: {line:?}"))?;
+            let (k, v) = line.split_once(": ").ok_or_else(|| anyhow!("malformed line from MPD: {line:?}"))?;
             if k == "binary" {
                 let mut buf = vec![0; v.parse()?];
                 self.reader.read_exact(&mut buf)?;
@@ -187,11 +209,32 @@ impl Conn {
     fn read_line(&mut self) -> Result<String> {
         let mut line = String::new();
         if self.reader.read_line(&mut line)? == 0 {
-            bail!("MPD closed the connection");
+            return Err(Closed.into());
         }
         line.truncate(line.trim_end_matches('\n').len());
         Ok(line)
     }
+}
+
+/// The server closed the connection.
+#[derive(Debug)]
+struct Closed;
+
+impl std::fmt::Display for Closed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("MPD closed the connection")
+    }
+}
+
+impl std::error::Error for Closed {}
+
+/// Whether `e` means the connection was already gone when the command was
+/// sent (MPD's idle timeout, a restart), rather than lost mid-reply.
+fn dropped(e: &anyhow::Error) -> bool {
+    use std::io::ErrorKind::*;
+    e.is::<Closed>()
+        || e.downcast_ref::<std::io::Error>()
+            .is_some_and(|io| matches!(io.kind(), BrokenPipe | ConnectionReset | ConnectionAborted | NotConnected))
 }
 
 /// An error reported by the server (`ACK [code@index] {command} message`).
@@ -334,4 +377,106 @@ impl Song {
 
 fn secs(v: &str) -> Duration {
     v.parse::<f64>().ok().and_then(|f| Duration::try_from_secs_f64(f).ok()).unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::Cursor;
+    use std::sync::{Arc, Mutex};
+
+    use super::*;
+
+    /// Collects what the client sends.
+    #[derive(Clone, Default)]
+    struct Sent(Arc<Mutex<Vec<u8>>>);
+
+    impl Write for Sent {
+        fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(b);
+            Ok(b.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// A connection to a fake server that replies with `replies` in turn
+    /// (after the greeting and the `binarylimit` reply).
+    fn conn(replies: &[u8]) -> (Conn, Sent) {
+        let mut script = b"OK MPD 0.24.0\nOK\n".to_vec();
+        script.extend_from_slice(replies);
+        let reader: Box<dyn Read + Send> = Box::new(Cursor::new(script));
+        let sent = Sent::default();
+        let target = Target { addr: Addr::Unix("/nonexistent".into()), password: None };
+        let c = Conn::start(target, None, BufReader::new(reader), Box::new(sent.clone())).unwrap();
+        (c, sent)
+    }
+
+    #[test]
+    fn pairs_and_refusals() {
+        let (mut c, sent) = conn(b"volume: 40\nstate: play\nOK\nACK [50@0] {playid} No such song\n");
+        let pairs = c.command("status").unwrap();
+        assert_eq!(pairs, vec![("volume".into(), "40".into()), ("state".into(), "play".into())]);
+        let err = c.command("playid 9").unwrap_err();
+        assert!(err.is::<Ack>(), "{err}");
+        assert_eq!(err.to_string(), "MPD: [50@0] {playid} No such song");
+        let sent = String::from_utf8(sent.0.lock().unwrap().clone()).unwrap();
+        assert_eq!(sent, "binarylimit 1048576\nstatus\nplayid 9\n");
+    }
+
+    #[test]
+    fn picture_arrives_in_chunks() {
+        let mut replies = b"size: 6\ntype: image/png\nbinary: 4\n".to_vec();
+        // payloads may contain newlines; each is followed by one more
+        replies.extend_from_slice(b"ab\nc\nOK\nsize: 6\nbinary: 2\nde\nOK\n");
+        let (mut c, sent) = conn(&replies);
+        assert_eq!(c.picture("a/b.flac").unwrap().as_deref(), Some(&b"ab\ncde"[..]));
+        let sent = String::from_utf8(sent.0.lock().unwrap().clone()).unwrap();
+        assert!(sent.ends_with("readpicture \"a/b.flac\" 0\nreadpicture \"a/b.flac\" 4\n"), "{sent}");
+    }
+
+    #[test]
+    fn no_picture_falls_back_to_cover_file() {
+        // readpicture: nothing embedded; albumart: refused (no cover file)
+        let (mut c, _) = conn(b"OK\nACK [50@0] {albumart} No file exists\n");
+        assert_eq!(c.picture("x.mp3").unwrap(), None);
+    }
+
+    #[test]
+    fn a_closed_connection_is_a_drop_but_a_timeout_is_not() {
+        let (mut c, _) = conn(b"");
+        let e = c.exchange("status").unwrap_err();
+        assert!(dropped(&e), "{e}");
+        let timeout = anyhow::Error::from(std::io::Error::from(std::io::ErrorKind::WouldBlock));
+        assert!(!dropped(&timeout));
+        assert!(dropped(&std::io::Error::from(std::io::ErrorKind::BrokenPipe).into()));
+    }
+
+    #[test]
+    fn parses_status_and_songs() {
+        let pairs = |s: &str| -> Pairs {
+            s.lines().map(|l| l.split_once(": ").map(|(k, v)| (k.into(), v.into())).unwrap()).collect()
+        };
+        let s = Status::parse(&pairs(
+            "volume: -1\nrepeat: 1\nsingle: oneshot\nconsume: 0\nstate: pause\nsong: 2\nsongid: 7\n\
+             elapsed: 61.5\nduration: 300.25\nbitrate: 0\nnextsongid: 8",
+        ));
+        assert_eq!((s.state, s.song_pos, s.song_id, s.next_id), (State::Pause, Some(2), Some(7), Some(8)));
+        assert_eq!((s.volume, s.bitrate), (None, None), "no mixer, no bitrate");
+        assert!(s.repeat && s.single && !s.consume && !s.random);
+        assert_eq!(s.elapsed, Duration::from_millis(61_500));
+
+        let songs = Song::parse_list(&pairs(
+            "file: a.flac\nTitle: A\nTrack: 3/12\nDisc: 2\nduration: 10.5\nId: 1\nfile: b.flac\nTrack: x",
+        ));
+        assert_eq!(songs.len(), 2);
+        assert_eq!((songs[0].title.as_deref(), songs[0].track, songs[0].disc), (Some("A"), Some(3), Some(2)));
+        assert_eq!((songs[0].id, songs[0].duration), (Some(1), Duration::from_millis(10_500)));
+        assert_eq!((songs[1].file.as_str(), songs[1].track), ("b.flac", None));
+    }
+
+    #[test]
+    fn quoting() {
+        assert_eq!(quote(r#"say "hi" \o/"#), r#""say \"hi\" \\o/""#);
+    }
 }

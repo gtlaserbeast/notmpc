@@ -1,12 +1,16 @@
 # notmpc
 
-A terminal MPD client drawn with [notcurses](https://notcurses.com).
+A terminal MPD client drawn with [notcurses](https://notcurses.com): album
+art and a pixel progress bar in terminals with pixel graphics (kitty, sixel),
+a spectrum visualizer behind the header, and rmpc's keys.
 
 ## Building
 
-Needs notcurses ≥ 3.0.8 with headers, pkg-config, and clang (for bindgen).
+Needs Rust ≥ 1.88, notcurses ≥ 3.0.8 built with its FFmpeg backend (for
+album art), its headers, pkg-config, and clang (for bindgen). MPD ≥ 0.22.4
+sends covers in large chunks; older servers work, just more slowly.
 
-    cargo build --release
+    cargo install --path .     # into ~/.cargo/bin; or: cargo build --release
 
 ## Connecting
 
@@ -61,8 +65,8 @@ queue and play, the ▾/▸ arrow to fold.
 ## Progress bar
 
 With pixel graphics (kitty, sixel terminals) the progress bar is a thin
-rounded track drawn in pixels: orange behind you, grey ahead, a lime thumb
-at the playhead. It's one small image, re-sent only when the thumb moves
+rounded track drawn in pixels: `progress_elapsed` behind you, `dim` ahead,
+a `progress_thumb` dot at the playhead. It's one small image, re-sent only when the thumb moves
 (at most once a second); click anywhere on it to seek. Without pixel
 graphics, or with `pixel_progress = false`, it's the rmpc-style symbol bar
 (`progress_symbols`).
@@ -100,8 +104,11 @@ give your own stops:
     visualizer_colors = "aurora"   # aurora (default), ember, ocean, sunset, mono
     # visualizer_colors = ["#7b2ff7", "#2f80ed", "#12c2a0"]
 
-Cost measured at 190×45 while playing: ~1.4% of a core for notmpc plus
-~1% for kitty, ~21 KiB/s to the terminal; nothing when paused.
+Cost at 173×45 in kitty, 30 fps, while playing: about 1% of a core for
+notmpc plus 1.2% for kitty. Frames that look the same as the last aren't
+sent, and nothing is when paused. kitty's share is mostly repainting, so
+`visualizer_fps` is the knob; with the visualizer off, notmpc and kitty
+together use about 0.25%.
 
 ## Queueing from a file manager
 
@@ -130,9 +137,10 @@ terminal's colour scheme, and only symbols any monospace font has.
 ## Keys
 
 rmpc 0.11's defaults (`rmpc config`), including multi-key sequences; Search
-is on 3 since the Artists/Albums/Playlists tabs don't exist. notmpc adds `t`
-(play next), `F` (follow the highlight), `V` (visualizer on/off), `[` / `]` (visualizer delay), `H`/`L` (collapse/expand all albums), `h`/`l` on the queue
-(collapse/expand the album under the cursor), Home/End, and Del.
+is on 3 since the Artists/Albums/Playlists tabs don't exist. notmpc adds
+`t` (play next), `F` (follow the highlight), `V` (visualizer on/off), `[` /
+`]` (visualizer delay), `H`/`L` (collapse/expand all albums), `h`/`l` on the
+queue (collapse/expand the album under the cursor), Home/End, and Del.
 
 | key                          | action                                     |
 |------------------------------|--------------------------------------------|
@@ -167,12 +175,14 @@ extra tags from the file (ReplayGain, comments...). Covers hide while a
 panel is open (pixel graphics can't sit under text).
 
 On the queue tab, `▸ collapse all` / `▾ expand all` at the right of the tab
-bar folds every album (keys `H` / `L`).
+bar folds every album (keys `H` / `L`). The cover column is as wide as a
+square cover needs to fill the height, up to `art_width` percent of the
+width (60 by default).
 
 **Playback follows the highlight** (foobar2000-style; `F` toggles). The
 queue has two cursors:
 
-- the *highlight* (orange bar) sits on the playing song and moves along
+- the *highlight* (the `cursor` colour) sits on the playing song and moves along
   with playback;
 - the *browse cursor* (dotted `┆` rails, faint tint) is what j/k, gg/G, etc.
   move. Enter, d, Space, J/K, h/l act on it. It never affects playback.
@@ -201,9 +211,12 @@ in italics.
   `libnotcurses-sys` crate wants notcurses ≥ 3.0.11, newer than Gentoo ships.
   `wrap_static_fns` turns notcurses' `static inline` API into linkable shims.
 - `src/nc/` is a thin safe wrapper over the calls we use; `nc::sys` is raw.
-- `src/mpd.rs` is a small blocking protocol client. A second connection
-  sits in `idle` on its own thread and tells the UI loop which subsystems
-  changed.
+- `src/mpd.rs` is a small blocking protocol client. The UI's connection
+  gives up on a reply after 10 s; a second connection sits in `idle` on its
+  own thread and tells the UI loop which subsystems changed.
+- `src/main.rs` runs the loop. It sleeps until something on screen is due
+  to change (the clock's next second, a visualizer frame, a pending search),
+  and visualizer-only frames redraw just the visualizer.
 - `src/config.rs` / `src/keys.rs`: config file, theme, rmpc-style keymap.
 - `src/meta.rs`: display metadata, inferred from the path for untagged files.
 - `src/app.rs` holds state and actions, `src/ui.rs` draws; `src/art.rs` fetches covers

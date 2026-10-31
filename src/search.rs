@@ -45,7 +45,14 @@ pub enum Edit {
 
 impl Search {
     pub fn new() -> Self {
-        Self { query: String::new(), editing: true, results: Queue::new(true), ran: None, edited_at: None, truncated: false }
+        Self {
+            query: String::new(),
+            editing: true,
+            results: Queue::new(true),
+            ran: None,
+            edited_at: None,
+            truncated: false,
+        }
     }
 
     pub fn edit(&mut self, k: Input) -> Edit {
@@ -152,10 +159,8 @@ pub fn filters(query: &str) -> Vec<String> {
         return Vec::new();
     }
     let build = |plain: &str| {
-        let parts: Vec<String> = terms
-            .iter()
-            .map(|(f, v)| format!("({} contains '{}')", f.unwrap_or(plain), escape(v)))
-            .collect();
+        let parts: Vec<String> =
+            terms.iter().map(|(f, v)| format!("({} contains '{}')", f.unwrap_or(plain), escape(v))).collect();
         if parts.len() == 1 { parts[0].clone() } else { format!("({})", parts.join(" AND ")) }
     };
     let mut out = vec![build("any")];

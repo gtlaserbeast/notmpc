@@ -504,10 +504,7 @@ mod tests {
     #[test]
     fn parses_actions() {
         assert_eq!("TogglePause".parse::<Action>().unwrap(), Action::TogglePause);
-        assert_eq!(
-            r#"SwitchToTab("Queue")"#.parse::<Action>().unwrap(),
-            Action::SwitchToTab("Queue".into())
-        );
+        assert_eq!(r#"SwitchToTab("Queue")"#.parse::<Action>().unwrap(), Action::SwitchToTab("Queue".into()));
         assert!("Bogus".parse::<Action>().is_err());
     }
 

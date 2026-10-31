@@ -2,7 +2,12 @@
 name = "notmpc"
 version = "0.1.0"
 edition = "2024"
+rust-version = "1.88"
+description = "A terminal MPD client drawn with notcurses: album art, a spectrum visualizer, rmpc keys"
 license = "MIT OR Apache-2.0"
+readme = "README.md"
+keywords = ["mpd", "music", "tui", "notcurses"]
+categories = ["command-line-utilities", "multimedia::audio"]
 
 [dependencies]
 anyhow = "1.0.104"
@@ -15,3 +20,8 @@ toml = "1.1.8"
 bindgen = { version = "0.73.2", features = ["experimental"] }
 cc = "1.10.0"
 pkg-config = "0.3.34"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true

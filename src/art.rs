@@ -35,15 +35,7 @@ pub struct Art<'nc> {
 
 impl<'nc> Art<'nc> {
     pub fn new(nc: &'nc Nc) -> Self {
-        Self {
-            nc,
-            pixel: nc.can_pixel(),
-            image: None,
-            frame: None,
-            visual: None,
-            song: None,
-            shown: None,
-        }
+        Self { nc, pixel: nc.can_pixel(), image: None, frame: None, visual: None, song: None, shown: None }
     }
 
     /// Fetches the cover for `song` unless it's already loaded.

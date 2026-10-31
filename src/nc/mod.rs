@@ -204,13 +204,7 @@ impl Nc {
 
     /// Creates a plane at (y, x) relative to the standard plane.
     pub fn new_plane(&self, y: u32, x: u32, rows: u32, cols: u32) -> Result<OwnedPlane<'_>> {
-        let opts = sys::ncplane_options {
-            y: y as i32,
-            x: x as i32,
-            rows,
-            cols,
-            ..Default::default()
-        };
+        let opts = sys::ncplane_options { y: y as i32, x: x as i32, rows, cols, ..Default::default() };
         // SAFETY: the standard plane is live; opts is valid for the call.
         let raw = unsafe { sys::ncplane_create(self.stdplane().raw, &opts) };
         if raw.is_null() {
@@ -283,9 +277,8 @@ impl Nc {
             y: sys::ncalign_e_NCALIGN_CENTER as i32,
             x: sys::ncalign_e_NCALIGN_CENTER as i32,
             blitter: if pixel { sys::ncblitter_e_NCBLIT_PIXEL } else { sys::ncblitter_e_NCBLIT_DEFAULT },
-            flags: (sys::NCVISUAL_OPTION_CHILDPLANE
-                | sys::NCVISUAL_OPTION_HORALIGNED
-                | sys::NCVISUAL_OPTION_VERALIGNED) as u64,
+            flags: (sys::NCVISUAL_OPTION_CHILDPLANE | sys::NCVISUAL_OPTION_HORALIGNED | sys::NCVISUAL_OPTION_VERALIGNED)
+                as u64,
             ..Default::default()
         };
         // SAFETY: raw, v and parent are live; opts is valid for the call.

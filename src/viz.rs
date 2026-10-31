@@ -124,11 +124,7 @@ impl Visualizer {
         }
         let targets = if self.live() { self.analyse(n) } else { vec![0.0; n] };
         for (bar, target) in self.bars.iter_mut().zip(targets) {
-            *bar = if target > *bar {
-                *bar + (target - *bar) * 0.7
-            } else {
-                (*bar - FALL_PER_SEC * dt).max(target)
-            };
+            *bar = if target > *bar { *bar + (target - *bar) * 0.7 } else { (*bar - FALL_PER_SEC * dt).max(target) };
         }
         &self.bars
     }
