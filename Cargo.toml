@@ -1,0 +1,12 @@
+[package]
+name = "notmpc"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1.0.104"
+
+[build-dependencies]
+bindgen = { version = "0.73.2", features = ["experimental"] }
+cc = "1.10.0"
+pkg-config = "0.3.34"
