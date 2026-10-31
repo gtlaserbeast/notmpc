@@ -17,7 +17,7 @@ use anyhow::Result;
 use crate::app::{App, Hit, List, Mode, Prompt, TABS, Tab, Target};
 use crate::art::Rect;
 use crate::browser::Entry;
-use crate::config::{Style, Theme};
+use crate::config::{ProgressBar, Style, Theme};
 use crate::mpd::State;
 use crate::nc::{self, BOLD, Color, ITALIC, Plane};
 use crate::pixelbar;
@@ -126,8 +126,10 @@ impl App<'_> {
         let mut hp = self.header_plane.take().expect("created above");
         hp.erase();
         self.draw_header(&mut hp, cols);
-        if !pixel_bar {
-            self.draw_progress(&mut hp, 2, cols);
+        match self.cfg.progress_bar {
+            _ if pixel_bar => {}
+            ProgressBar::Symbols => self.draw_progress(&mut hp, 2, cols),
+            ProgressBar::Braille | ProgressBar::Pixel => self.draw_braille_bar(&mut hp, 2, cols),
         }
         reset(&mut hp);
         self.header_plane = Some(hp);
@@ -368,6 +370,54 @@ impl App<'_> {
         bar.draw(y, cols, frac, !stopped, &colors)?;
         self.hit(y, 0, cols, Target::Progress);
         Ok(())
+    }
+
+    /// The progress bar in braille, two dot-columns a cell: a thick line
+    /// behind the playhead (a gradient from `progress_elapsed` to
+    /// `progress_thumb` by position, so cells keep their colour as it
+    /// passes), a thin one ahead (`progress_track`), and the playhead a
+    /// tall tick. Moves in whole seconds, so at most a cell or two change.
+    fn draw_braille_bar(&self, p: &mut Plane, y: u32, cols: u32) {
+        let t = &self.cfg.theme;
+        let s = &self.status;
+        let stopped = s.state == State::Stop || s.duration.is_zero();
+        let units = cols * 2;
+        let head = if stopped {
+            None
+        } else {
+            let frac = (self.elapsed().as_secs() as f64 / s.duration.as_secs_f64()).min(1.0);
+            Some(((frac * f64::from(units)) as u32).min(units - 1))
+        };
+        // Braille dot bits for one column: (left, right).
+        const THICK: (u32, u32) = (0x02 | 0x04, 0x10 | 0x20);
+        const THIN: (u32, u32) = (0x04, 0x20);
+        const TICK: (u32, u32) = (0x01 | 0x02 | 0x04 | 0x40, 0x08 | 0x10 | 0x20 | 0x80);
+        let bits = |u: u32, right: bool| {
+            let (l, r) = match head {
+                Some(h) if u == h => TICK,
+                Some(h) if u < h => THICK,
+                _ => THIN,
+            };
+            if right { r } else { l }
+        };
+        let ends = (self.nc.rgb(t.progress_elapsed.fg), self.nc.rgb(t.progress_thumb.fg));
+        self.hit(y, 0, cols, Target::Progress);
+        for x in 0..cols {
+            let (a, b) = (2 * x, 2 * x + 1);
+            let ch = char::from_u32(0x2800 + (bits(a, false) | bits(b, true))).unwrap_or(' ');
+            let style = match head {
+                Some(h) if h == a || h == b => t.progress_thumb,
+                Some(h) if a < h => match ends {
+                    (Some(from), Some(to)) => {
+                        let rgb = gradient(&[from, to], x as f32 / (cols.max(2) - 1) as f32);
+                        Style { fg: Color::Rgb(rgb), ..t.progress_elapsed }
+                    }
+                    _ => t.progress_elapsed,
+                },
+                _ => t.progress_track,
+            };
+            put(p, y, x, ch.encode_utf8(&mut [0; 4]), style);
+        }
     }
 
     /// `[start][elapsed…][thumb][remaining…][end]` across the full width.

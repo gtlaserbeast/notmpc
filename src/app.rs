@@ -9,7 +9,7 @@ use anyhow::Result;
 
 use crate::art::Art;
 use crate::browser::{Browser, Entry};
-use crate::config::Config;
+use crate::config::{Config, ProgressBar};
 use crate::enqueue::{self, Item, Where};
 use crate::keys::{Action, Ctx, Lookup};
 use crate::meta::Meta;
@@ -148,7 +148,7 @@ pub struct App<'nc> {
 
 impl<'nc> App<'nc> {
     pub fn new(nc: &'nc Nc, cfg: Config, conn: Conn) -> Result<Self> {
-        let pixel_bar = if cfg.pixel_progress { PixelBar::new(nc) } else { None };
+        let pixel_bar = if cfg.progress_bar == ProgressBar::Pixel { PixelBar::new(nc) } else { None };
         let mut app = Self {
             nc,
             queue: Queue::new(cfg.group_by_album),

@@ -164,6 +164,19 @@ impl State {
     }
 }
 
+/// How the progress bar is drawn.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ProgressBar {
+    /// Braille dots: half-cell steps, a gradient behind the playhead. Only
+    /// the cells that change are sent, so it's the cheapest.
+    Braille,
+    /// A small image, when the terminal has pixel graphics (else braille).
+    Pixel,
+    /// rmpc's whole-cell bar from `progress_symbols`.
+    Symbols,
+}
+
 /// The config file's keys, one to one; anything left out keeps its default.
 #[derive(Clone, Debug, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -178,9 +191,7 @@ pub struct Config {
     pub follow_cursor: bool,
     /// How often to refresh bitrate and position while playing.
     pub status_update_interval_ms: u64,
-    /// The progress bar in pixels when the terminal has pixel graphics;
-    /// false for the symbol bar (`progress_symbols`).
-    pub pixel_progress: bool,
+    pub progress_bar: ProgressBar,
     /// Spectrum behind the header, fed by MPD's `fifo` output.
     pub visualizer: bool,
     pub visualizer_fifo: PathBuf,
@@ -210,7 +221,7 @@ impl Default for Config {
             group_by_album: true,
             follow_cursor: true,
             status_update_interval_ms: 1000,
-            pixel_progress: true,
+            progress_bar: ProgressBar::Braille,
             visualizer: true,
             visualizer_fifo: env::var_os("XDG_RUNTIME_DIR")
                 .map_or_else(|| PathBuf::from("/tmp"), PathBuf::from)

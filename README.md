@@ -71,12 +71,17 @@ queue and play, the ▾/▸ arrow to fold.
 
 ## Progress bar
 
-With pixel graphics (kitty, sixel terminals) the progress bar is a thin
-rounded track drawn in pixels: `progress_elapsed` behind you, `dim` ahead,
-a `progress_thumb` dot at the playhead. It's one small image, re-sent only when the thumb moves
-(at most once a second); click anywhere on it to seek. Without pixel
-graphics, or with `pixel_progress = false`, it's the rmpc-style symbol bar
-(`progress_symbols`).
+`progress_bar` picks one of three (click anywhere on it to seek):
+
+- `"braille"` (default): braille dots, moving in half-cell steps. A thick
+  line behind the playhead, coloured in a gradient from `progress_elapsed`
+  to `progress_thumb`; a thin `progress_track` line ahead; the playhead a
+  tall tick in `progress_thumb`. Each second only the cell or two that
+  changed are sent, so it's the cheapest.
+- `"pixel"`: a thin rounded track drawn as an image, with a round thumb
+  (terminals with pixel graphics: kitty, sixel; braille elsewhere). The
+  image is re-sent once a second while playing.
+- `"symbols"`: rmpc's bar from `progress_symbols`, in whole cells.
 
 ## Visualizer
 
