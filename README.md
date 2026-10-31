@@ -4,6 +4,12 @@ A terminal MPD client drawn with [notcurses](https://notcurses.com): album
 art and a pixel progress bar in terminals with pixel graphics (kitty, sixel),
 a spectrum visualizer behind the header, and rmpc's keys.
 
+![notmpc in kitty: the queue grouped by album, the cover at full height,
+the spectrum behind the header](docs/screenshot.webp)
+
+<sub>Shown with a custom orange theme (see Configuration); the defaults use
+the terminal's palette.</sub>
+
 ## Building
 
 Needs Rust ≥ 1.88, notcurses ≥ 3.0.8 built with its FFmpeg backend (for
