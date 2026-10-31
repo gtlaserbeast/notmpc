@@ -49,8 +49,11 @@ pub struct Theme {
     pub mode_off: Style,
     pub tab_active: Style,
     pub tab_inactive: Style,
-    /// The queue cursor.
+    /// The highlight: the song that's playing, or plays next.
     pub cursor: Style,
+    /// The browse cursor's row tint and dotted rails.
+    pub browse: Style,
+    pub browse_rail: Style,
     /// The song that's playing.
     pub current: Style,
     pub album: Style,
@@ -84,6 +87,8 @@ impl Default for Theme {
             tab_active: Style::fg(BLACK).on(ORANGE).bold(),
             tab_inactive: Style::fg(Color::Default),
             cursor: Style::fg(BLACK).on(ORANGE).bold(),
+            browse: Style::fg(Color::Default).on(Color::Rgb(0x2e2010)),
+            browse_rail: Style::fg(Color::Rgb(0xa7ff04)).bold(),
             current: Style::fg(ORANGE).bold(),
             album: Style::fg(WHITE),
             date: Style::fg(YELLOW),
@@ -221,6 +226,8 @@ impl Theme {
             "tab_active" => &mut self.tab_active,
             "tab_inactive" => &mut self.tab_inactive,
             "cursor" => &mut self.cursor,
+            "browse" => &mut self.browse,
+            "browse_rail" => &mut self.browse_rail,
             "current" => &mut self.current,
             "album" => &mut self.album,
             "date" => &mut self.date,

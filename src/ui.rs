@@ -310,35 +310,63 @@ impl App<'_> {
         }
         q.scroll = q.scroll.min(q.rows.len().saturating_sub(h));
 
-        let w = area.cols;
+        // Rows are drawn one cell in from each side, leaving room for the
+        // browse cursor's dotted rails.
+        let (x, w) = (area.x + 1, area.cols.saturating_sub(2));
         let scroll = self.queue.scroll;
         for line in scroll..(scroll + h).min(self.queue.rows.len()) {
             let row = self.queue.rows[line];
             let y = area.y + (line - scroll) as u32;
-            let cursor = line == self.queue.sel;
+            let browse = line == self.queue.sel;
+            let primary = self.is_primary(row);
+            let fill = if primary {
+                Some(t.cursor)
+            } else if browse {
+                Some(t.browse)
+            } else {
+                None
+            };
+            if let Some(f) = fill {
+                put(p, y, area.x, &" ".repeat(area.cols as usize), f);
+            }
             if let Row::Group(g) = row {
-                self.hit(y, area.x, 2, Target::Caret(g));
+                self.hit(y, x, 2, Target::Caret(g));
             }
             self.hit(y, area.x, area.cols, Target::Row(row));
+            let hl = Highlight { primary, fill };
             match row {
-                Row::Group(g) => self.draw_group_header(p, y, area.x, w, g, cursor, &t),
-                Row::Song(i) => self.draw_song_row(p, y, area.x, w, i, cursor, &t),
+                Row::Group(g) => self.draw_group_header(p, y, x, w, g, hl, &t),
+                Row::Song(i) => self.draw_song_row(p, y, x, w, i, hl, &t),
+            }
+            if browse {
+                let rail = Style { bg: fill.map_or(Color::Default, |f| f.bg), ..t.browse_rail };
+                put(p, y, area.x, "┆", rail);
+                put(p, y, area.x + area.cols - 1, "┆", rail);
+            }
+        }
+    }
+
+    /// Whether `row` shows the highlight: the highlighted song, or the
+    /// collapsed album containing it.
+    fn is_primary(&self, row: Row) -> bool {
+        let q = &self.queue;
+        let Some(id) = self.primary else { return false };
+        match row {
+            Row::Song(i) => q.songs[i].id == Some(id),
+            Row::Group(g) => {
+                q.collapsed.contains(&q.groups[g].key) && q.pos_of_id(id).is_some_and(|i| q.group_of_song(i) == g)
             }
         }
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn draw_group_header(&self, p: &mut Plane, y: u32, x: u32, w: u32, g: usize, cursor: bool, t: &Theme) {
+    fn draw_group_header(&self, p: &mut Plane, y: u32, x: u32, w: u32, g: usize, hl: Highlight, t: &Theme) {
         let q = &self.queue;
         let group = &q.groups[g];
         let m = &q.metas[q.order[group.start]];
         let collapsed = q.collapsed.contains(&group.key);
-        let playing_here =
-            self.status.song_pos.is_some_and(|c| c < q.songs.len() && q.group_of_song(c) == g);
-        let st = |s: Style| italic_if(if cursor { t.cursor } else { s }, m.inferred);
-        if cursor {
-            put(p, y, x, &" ".repeat(w as usize), t.cursor);
-        }
+        let playing_here = self.current_pos().is_some_and(|c| q.group_of_song(c) == g);
+        let st = |s: Style| italic_if(hl.apply(s), m.inferred);
 
         // A collapsed album that's playing gets the ▶ on its header.
         let caret = match (collapsed, playing_here) {
@@ -347,7 +375,7 @@ impl App<'_> {
             (false, _) => "▾ ",
         };
         let mut left: Segs = vec![
-            (caret.into(), if cursor { t.cursor } else { t.dim }),
+            (caret.into(), hl.apply(t.dim)),
             (if m.album.is_empty() { "(no album)".into() } else { m.album.clone() }, st(t.group_header)),
         ];
         if !m.year.is_empty() {
@@ -363,31 +391,21 @@ impl App<'_> {
 
         let lx = put_segs(p, y, x, w.saturating_sub(rw + 2), &left);
         let fill = (x + w).saturating_sub(lx + rw + 1);
-        put(p, y, lx + 1, &"─".repeat(fill as usize), if cursor { t.cursor } else { t.dim });
-        put(p, y, x + w - rw, &right, if cursor { t.cursor } else { t.dim });
+        put(p, y, lx + 1, &"─".repeat(fill as usize), hl.apply(t.dim));
+        put(p, y, x + w - rw, &right, hl.apply(t.dim));
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn draw_song_row(&self, p: &mut Plane, y: u32, x: u32, w: u32, i: usize, cursor: bool, t: &Theme) {
+    fn draw_song_row(&self, p: &mut Plane, y: u32, x: u32, w: u32, i: usize, hl: Highlight, t: &Theme) {
         let q = &self.queue;
         let song = &q.songs[i];
         let m = &q.metas[i];
-        let current = self.status.song_pos == Some(i);
+        let current = song.id.is_some() && song.id == self.status.song_id;
         let next = !current && song.id.is_some() && song.id == self.status.next_id;
         let marked = song.id.is_some_and(|id| q.marked.contains(&id));
 
-        // The cursor and current-song styles override the column styles.
-        let over = if cursor {
-            Some(t.cursor)
-        } else if current {
-            Some(t.current)
-        } else {
-            None
-        };
-        let st = |s: Style| italic_if(over.unwrap_or(s), m.inferred);
-        if cursor {
-            put(p, y, x, &" ".repeat(w as usize), t.cursor);
-        }
+        // The highlight and current-song styles override the column styles.
+        let st = |s: Style| italic_if(hl.apply(if current { t.current } else { s }), m.inferred);
 
         let (marker, marker_style) = if current {
             ("▶ ", st(t.text))
@@ -441,7 +459,7 @@ impl App<'_> {
         let n = q.songs.len();
         let total: Duration = q.songs.iter().map(|s| s.duration).sum();
         let mut right = format!("{n} song{} · {}", if n == 1 { "" } else { "s" }, fmt_time(total));
-        if let Some(pos) = self.status.song_pos.filter(|&p| self.status.state != State::Stop && p < n) {
+        if let Some(pos) = self.current_pos().filter(|_| self.status.state != State::Stop) {
             let after: Duration = q.order[q.display_of[pos] + 1..].iter().map(|&i| q.songs[i].duration).sum();
             let left = after + self.status.duration.saturating_sub(self.elapsed());
             right += &format!(" · {} left", fmt_time(left));
@@ -473,6 +491,24 @@ impl App<'_> {
             return;
         };
         put_segs(p, y, 1, max, &segs);
+    }
+}
+
+/// How a queue row is highlighted: the highlight (`primary`) replaces the
+/// row's colours; the browse cursor only tints the background.
+#[derive(Clone, Copy)]
+struct Highlight {
+    primary: bool,
+    fill: Option<Style>,
+}
+
+impl Highlight {
+    fn apply(self, s: Style) -> Style {
+        match self.fill {
+            Some(f) if self.primary => f,
+            Some(f) => Style { bg: f.bg, ..s },
+            None => s,
+        }
     }
 }
 

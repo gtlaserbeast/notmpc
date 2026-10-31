@@ -27,9 +27,6 @@ const MESSAGE_TTL: Duration = Duration::from_secs(4);
 const DOUBLE_CLICK: Duration = Duration::from_millis(400);
 /// Rows the mouse wheel moves the queue cursor.
 const WHEEL_ROWS: isize = 3;
-/// How long the cursor must rest before playback follows it, so scrolling
-/// past songs doesn't reorder the queue on every step.
-const FOLLOW_DELAY: Duration = Duration::from_millis(350);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Tab {
@@ -101,12 +98,15 @@ pub struct App<'nc> {
     last_click: Option<(Instant, Target)>,
     /// Keys typed so far of a multi-key binding (`g` of `gg`).
     pub(crate) pending: Vec<Input>,
-    /// Playback follows the cursor: the song under it plays next.
+    /// Playback follows the highlight (foobar2000-style): the highlighted
+    /// song plays next. The highlight sits on the playing song until it's
+    /// moved by hand (`PlayNext`, or a click); the browse cursor
+    /// (`queue.sel`) moves freely without affecting playback.
     pub(crate) follow: bool,
-    /// The playing song, moved by `retarget` to just before the cursor's song.
+    /// The highlighted song's id.
+    pub(crate) primary: Option<u32>,
+    /// The playing song, moved by `retarget` to just before the highlight.
     displaced: Option<Displaced>,
-    /// When the cursor last moved by hand, until `retarget` acts on it.
-    moved_at: Option<Instant>,
     /// Songs that appeared right after the moved song; see `place_inserted`.
     inserted: Vec<u32>,
     pub(crate) art: Art<'nc>,
@@ -131,13 +131,15 @@ impl<'nc> App<'nc> {
             hits: RefCell::new(Vec::new()),
             last_click: None,
             pending: Vec::new(),
+            primary: None,
             displaced: None,
-            moved_at: None,
             inserted: Vec::new(),
             art: Art::new(nc),
         };
         app.update(ALL_EVENTS)?;
-        app.cursor_to_upcoming();
+        if let Some(cur) = app.current_pos() {
+            app.queue.sel = app.queue.row_of_song(cur);
+        }
         Ok(app)
     }
 
@@ -162,14 +164,18 @@ impl<'nc> App<'nc> {
             self.fetched_at = Instant::now();
             self.art.load(&mut self.conn, self.song.as_ref().map(|(s, _)| s.file.as_str()))?;
 
-            let song_changed = before.is_some() && self.status.song_id != before;
+            let song_changed = self.status.song_id != before;
             // The moved song is done playing, or following no longer applies.
             if self.displaced.is_some_and(|d| Some(d.id) != self.status.song_id) || !self.can_follow() {
                 self.restore()?;
             }
-            if song_changed && self.follow {
-                self.cursor_to_upcoming();
+            // The highlight rides along with playback until moved by hand.
+            if self.follow && (song_changed || !self.can_follow()) {
+                self.primary = self.status.song_id;
             }
+        }
+        if self.follow && !self.primary.is_some_and(|id| self.queue.pos_of_id(id).is_some()) {
+            self.primary = self.status.song_id;
         }
         Ok(())
     }
@@ -211,10 +217,6 @@ impl<'nc> App<'nc> {
         if self.is_playing() && self.fetched_at.elapsed() >= self.cfg.status_interval {
             self.poll_status()?;
         }
-        if self.moved_at.is_some_and(|t| t.elapsed() >= FOLLOW_DELAY) {
-            self.moved_at = None;
-            self.retarget()?;
-        }
         Ok(())
     }
 
@@ -238,7 +240,13 @@ impl<'nc> App<'nc> {
         self.follow && !s.random && !s.single && s.state != State::Stop
     }
 
-    /// Makes the cursor's song play next, foobar2000-style, without
+    /// The playing song's queue position, looked up by id: MPD's reported
+    /// position goes stale while songs are being moved.
+    pub fn current_pos(&self) -> Option<usize> {
+        self.status.song_id.and_then(|id| self.queue.pos_of_id(id))
+    }
+
+    /// Makes the highlighted song play next, foobar2000-style, without
     /// interrupting the current one and keeping the queue's order: the
     /// playing song moves to just before it (MPD then flows into it
     /// gaplessly and continues from there), and moves back home once the
@@ -247,11 +255,13 @@ impl<'nc> App<'nc> {
         if !self.can_follow() {
             return Ok(());
         }
-        let (Some(cur_id), Some(target)) = (self.status.song_id, self.queue.selected_first_song()) else {
+        let (Some(cur_id), Some(target_id)) = (self.status.song_id, self.primary) else {
             return Ok(());
         };
         self.fetch_queue()?;
-        let Some(cur) = self.queue.pos_of_id(cur_id) else { return Ok(()) };
+        let (Some(cur), Some(target)) = (self.queue.pos_of_id(cur_id), self.queue.pos_of_id(target_id)) else {
+            return Ok(());
+        };
         if target == cur || Some(target) == self.queue.display_next(cur) {
             return self.restore();
         }
@@ -284,18 +294,29 @@ impl<'nc> App<'nc> {
         self.fetch_queue()
     }
 
-    /// Puts the cursor on the song that plays after the current one.
-    fn cursor_to_upcoming(&mut self) {
-        let Some(cur) = self.status.song_pos.filter(|&p| p < self.queue.songs.len()) else { return };
-        let next = if self.follow { self.queue.display_next(cur).unwrap_or(cur) } else { cur };
-        self.queue.sel = self.queue.row_of_song(next);
-    }
-
-    /// The cursor moved by hand: playback follows once it settles.
-    fn cursor_moved(&mut self) {
+    /// Moves the highlight to the browse cursor's song (an album header
+    /// means its first song), which then plays next. With following off,
+    /// moves that song to right after the current one instead.
+    fn play_next(&mut self) -> Result<()> {
+        let Some(id) = self.queue.selected_first_song().and_then(|q| self.queue.songs[q].id) else {
+            return Ok(());
+        };
         if self.follow {
-            self.moved_at = Some(Instant::now());
+            if !self.can_follow() {
+                self.say("the highlight can't lead playback in random or single mode, or while stopped");
+                return Ok(());
+            }
+            self.primary = Some(id);
+            return self.retarget();
         }
+        if let Some(cur) = self.current_pos()
+            && Some(id) != self.status.song_id
+        {
+            let from = self.queue.pos_of_id(id).unwrap_or(cur);
+            let to = if from > cur { cur + 1 } else { cur };
+            self.mpd(&format!("moveid {id} {to}"))?;
+        }
+        Ok(())
     }
 
     /// Elapsed time, advanced locally between fetches while playing.
@@ -397,11 +418,12 @@ impl<'nc> App<'nc> {
             ToggleFollow => {
                 self.follow = !self.follow;
                 if self.follow {
-                    self.cursor_moved();
+                    self.primary = self.status.song_id;
                 } else {
                     self.restore()?;
+                    self.primary = None;
                 }
-                self.say(if self.follow { "playback follows cursor" } else { "playback follows the queue" });
+                self.say(if self.follow { "playback follows the highlight" } else { "playback follows the queue" });
             }
             NextTab | PreviousTab => {
                 let i = TABS.iter().position(|(t, _)| *t == self.tab).unwrap_or(0);
@@ -432,11 +454,9 @@ impl<'nc> App<'nc> {
                     _ => page,
                 };
                 self.queue.move_sel(by);
-                self.cursor_moved();
             }
             Top | Bottom => {
                 self.queue.sel = if action == Top { 0 } else { self.queue.rows.len().saturating_sub(1) };
-                self.cursor_moved();
             }
             Left => match self.queue.selected() {
                 Some(Row::Group(g)) => self.queue.set_collapsed(g, true),
@@ -458,11 +478,11 @@ impl<'nc> App<'nc> {
             DeleteAll => self.prompt = Some(Prompt::ClearQueue),
             MoveUp | MoveDown => self.move_song(action == MoveUp)?,
             JumpToCurrent => {
-                if let Some(cur) = self.status.song_pos.filter(|&p| p < self.queue.songs.len()) {
+                if let Some(cur) = self.current_pos() {
                     self.queue.sel = self.queue.row_of_song(cur);
-                    self.cursor_moved();
                 }
             }
+            PlayNext => self.play_next()?,
             Shuffle => {
                 self.displaced = None;
                 self.mpd("shuffle")?;
@@ -478,7 +498,6 @@ impl<'nc> App<'nc> {
                     }
                 }
                 self.queue.move_sel(1);
-                self.cursor_moved();
             }
             InvertSelection => {
                 let q = &mut self.queue;
@@ -539,7 +558,6 @@ impl<'nc> App<'nc> {
             Some((_, Target::Volume)) if wheel_down => _ = self.act(Action::VolumeDown)?,
             _ if (wheel_up || wheel_down) && self.tab == Tab::Queue => {
                 self.queue.move_sel(if wheel_up { -WHEEL_ROWS } else { WHEEL_ROWS });
-                self.cursor_moved();
             }
             _ if m.button != 1 => {}
             Some((_, Target::Tab(t))) => self.tab = t,
@@ -570,11 +588,13 @@ impl<'nc> App<'nc> {
                 }
                 if double(t, self.last_click) {
                     self.last_click = None;
-                    self.moved_at = None;
                     self.play_selected()?;
                 } else {
                     self.last_click = Some((Instant::now(), t));
-                    self.cursor_moved();
+                    // A click moves the highlight too: that song plays next.
+                    if self.follow && self.can_follow() {
+                        self.play_next()?;
+                    }
                 }
             }
             _ => {}

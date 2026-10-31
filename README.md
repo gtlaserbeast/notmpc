@@ -39,8 +39,8 @@ notation, so snippets carry over) and the gtlaserbeast theme.
 ## Keys
 
 rmpc 0.11's defaults (`rmpc config`), including multi-key sequences; Search
-is on 3 since the Artists/Albums/Playlists tabs don't exist. notmpc adds `F`
-(follow cursor), `H`/`L` (collapse/expand all albums), `h`/`l` on the queue
+is on 3 since the Artists/Albums/Playlists tabs don't exist. notmpc adds `t`
+(play next), `F` (follow the highlight), `H`/`L` (collapse/expand all albums), `h`/`l` on the queue
 (collapse/expand the album under the cursor), Home/End, and Del.
 
 | key                          | action                                     |
@@ -62,20 +62,29 @@ is on 3 since the Artists/Albums/Playlists tabs don't exist. notmpc adds `F`
 | H / L                        | collapse / expand all albums               |
 | Enter                        | play (an album header plays the album)     |
 | Space / C-Space              | mark / invert marks                        |
+| t                            | play next (moves the highlight here)       |
 | d / D                        | delete / clear queue (asks first)          |
 | J / K                        | move song down / up                        |
 | C                            | jump to current song                       |
 | X                            | shuffle                                    |
 | Esc                          | clear marks                                |
 
-**Playback follows cursor** (foobar2000-style, on by default): the song under
-the queue cursor plays next, without cutting the current one short, and
-playback carries on from there. When a song starts, the cursor moves to the
-one after it, so leaving the cursor alone plays the queue in order. The `»`
-marker and the footer show what's next. Under the hood the playing song is
-moved to just before the chosen one (so MPD's transition stays gapless) and
-moved back when the next song starts; the display always shows the real
-order. Off in random or single mode.
+**Playback follows the highlight** (foobar2000-style; `F` toggles). The
+queue has two cursors:
+
+- the *highlight* (orange bar) sits on the playing song and moves along
+  with playback;
+- the *browse cursor* (dotted `┆` rails, faint tint) is what j/k, gg/G, etc.
+  move. Enter, d, Space, J/K, h/l act on it. It never affects playback.
+
+`t` (PlayNext) moves the highlight to the browse cursor: that song plays
+next, without cutting the current one short, and playback carries on from
+there. Clicking a row does the same; double-click plays it now. `»` marks
+the next song, the footer names it. Under the hood the playing song is
+moved to just before the highlighted one (so MPD's transition stays
+gapless) and back when the next song starts; the display always shows the
+real order. Off in random or single mode. With following off, `t` moves
+the song to play next instead.
 
 Mouse: click a tab, a queue row (double-click plays; on an album header,
 plays the album), an album's ▾/▸ arrow (collapses / expands it), a mode word

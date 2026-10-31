@@ -82,6 +82,9 @@ pub enum Action {
     Shuffle,
     Save,
     AddToPlaylist,
+    /// notmpc: the browse cursor's song plays next (queue: moves the
+    /// highlight there; directories: inserts after the current song).
+    PlayNext,
     /// notmpc: fold / unfold every album group.
     CollapseAll,
     ExpandAll,
@@ -166,6 +169,7 @@ impl FromStr for Action {
             "Shuffle" => Shuffle,
             "Save" => Save,
             "AddToPlaylist" => AddToPlaylist,
+            "PlayNext" => PlayNext,
             "CollapseAll" => CollapseAll,
             "ExpandAll" => ExpandAll,
             "None" => Unbind,
@@ -429,6 +433,7 @@ const DEFAULTS: &[(&str, &[(&str, &str)])] = &[
             ("X", "Shuffle"),
             // notmpc
             ("<Del>", "Delete"),
+            ("t", "PlayNext"),
             ("H", "CollapseAll"),
             ("L", "ExpandAll"),
         ],
