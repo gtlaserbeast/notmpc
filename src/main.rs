@@ -1,7 +1,9 @@
 mod app;
 mod art;
+mod browser;
 mod cli;
 mod config;
+mod enqueue;
 mod keys;
 mod meta;
 mod mpd;
@@ -40,7 +42,7 @@ fn spawn_idle(target: Target) -> Result<Receiver<MpdEvent>> {
     let (tx, rx) = mpsc::channel();
     thread::spawn(move || {
         loop {
-            let ev = match conn.command("idle player mixer options playlist update") {
+            let ev = match conn.command("idle player mixer options playlist update database") {
                 Ok(pairs) => MpdEvent::Changed(pairs.into_iter().map(|(_, v)| v).collect()),
                 Err(e) => {
                     if tx.send(MpdEvent::Lost(format!("{e:#}"))).is_err() {
@@ -66,8 +68,8 @@ fn spawn_idle(target: Target) -> Result<Receiver<MpdEvent>> {
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.first().map(String::as_str) {
-        Some("add") => return cli::run(cli::Mode::Add, &args[1..]),
-        Some("insert") => return cli::run(cli::Mode::Insert, &args[1..]),
+        Some("add") => return cli::run(enqueue::Where::End, &args[1..]),
+        Some("insert") => return cli::run(enqueue::Where::Next, &args[1..]),
         Some(other) => anyhow::bail!("unknown command {other:?}; try: notmpc [add|insert PATH...]"),
         None => {}
     }

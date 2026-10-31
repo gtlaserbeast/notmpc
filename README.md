@@ -13,6 +13,28 @@ Needs notcurses ≥ 3.0.8 with headers, pkg-config, and clang (for bindgen).
 Follows mpc: `MPD_HOST` (`[password@]host` or a socket path) and `MPD_PORT`.
 Without them it tries `$XDG_RUNTIME_DIR/mpd/socket`, then `localhost:6600`.
 
+## Directories
+
+MPD's database as rmpc-style columns: parent, current folder, preview. The
+preview shows the folder's cover (pixel graphics in kitty), album, year,
+track count, length and format, and its contents; for a song, its tags.
+Folders first, natural order (`Disc 2` before `Disc 10`); songs by disc and
+track. The playing song and the folders containing it are highlighted.
+
+| key            | action                                              |
+|----------------|-----------------------------------------------------|
+| j / k, gg / G  | move                                                |
+| l / Enter      | open folder (Enter on a song: queue it and play)    |
+| h              | up                                                  |
+| a / A          | add selection / everything here to the end          |
+| t              | play next (insert after the current song)           |
+| Space          | mark (a / t then act on the marks)                  |
+| C              | open the playing song's folder                      |
+
+Mouse: click to select, double-click to open / play, click the left column
+to go up, click an entry in the preview to open its folder. Adding starts
+playback on the first new song if nothing is playing.
+
 ## Queueing from a file manager
 
     notmpc add PATH...      # append files / directory trees
@@ -112,7 +134,6 @@ in italics.
 
 ## Roadmap
 
-1. Directories tab
-2. Spectrum visualizer behind the header, from MPD's FIFO output
-3. Search tab
-4. Waveform seek bar
+1. Spectrum visualizer behind the header, from MPD's FIFO output
+2. Search tab
+3. Waveform seek bar

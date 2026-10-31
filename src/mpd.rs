@@ -289,6 +289,8 @@ pub struct Song {
     pub duration: Duration,
     /// Queue id, stable across reordering (unlike the position).
     pub id: Option<u32>,
+    /// `samplerate:bits:channels`.
+    pub format: Option<String>,
 }
 
 impl Song {
@@ -303,24 +305,30 @@ impl Song {
         for (k, v) in pairs {
             if k == "file" {
                 songs.push(Self { file: v.clone(), ..Default::default() });
-                continue;
-            }
-            let Some(s) = songs.last_mut() else { continue };
-            match k.as_str() {
-                "Title" => s.title = Some(v.clone()),
-                "Artist" => s.artist = Some(v.clone()),
-                "Album" => s.album = Some(v.clone()),
-                "AlbumArtist" => s.album_artist = Some(v.clone()),
-                "Date" => s.date = Some(v.clone()),
-                // "3" or "3/12"
-                "Track" => s.track = v.split('/').next().and_then(|n| n.trim().parse().ok()),
-                "Disc" => s.disc = v.split('/').next().and_then(|n| n.trim().parse().ok()),
-                "duration" => s.duration = secs(v),
-                "Id" => s.id = v.parse().ok(),
-                _ => {}
+            } else if let Some(s) = songs.last_mut() {
+                s.apply(k, v);
             }
         }
         songs
+    }
+
+    /// Takes one `key: value` line of a song's description.
+    pub fn apply(&mut self, k: &str, v: &str) {
+        let num = |v: &str| v.split('/').next().and_then(|n| n.trim().parse().ok());
+        match k {
+            "Title" => self.title = Some(v.to_owned()),
+            "Artist" => self.artist = Some(v.to_owned()),
+            "Album" => self.album = Some(v.to_owned()),
+            "AlbumArtist" => self.album_artist = Some(v.to_owned()),
+            "Date" => self.date = Some(v.to_owned()),
+            // "3" or "3/12"
+            "Track" => self.track = num(v),
+            "Disc" => self.disc = num(v),
+            "duration" => self.duration = secs(v),
+            "Format" => self.format = Some(v.to_owned()),
+            "Id" => self.id = v.parse().ok(),
+            _ => {}
+        }
     }
 }
 

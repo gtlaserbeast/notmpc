@@ -5,6 +5,7 @@
 use std::env;
 use std::fs;
 use std::path::PathBuf;
+use std::rc::Rc;
 
 use anyhow::Result;
 
@@ -25,8 +26,8 @@ pub struct Art<'nc> {
     // Fields drop in order, and the image plane is a child of the frame.
     image: Option<OwnedPlane<'nc>>,
     frame: Option<OwnedPlane<'nc>>,
-    visual: Option<Visual>,
-    /// The song `visual` belongs to.
+    visual: Option<Rc<Visual>>,
+    /// What `visual` belongs to (a song URI, or any caller-chosen key).
     song: Option<String>,
     /// Where the art is on screen, if it is.
     shown: Option<Rect>,
@@ -53,11 +54,20 @@ impl<'nc> Art<'nc> {
         self.hide();
         self.song = song.map(str::to_owned);
         self.visual = match song {
-            // A cover notcurses can't decode is the same as no cover.
-            Some(uri) => conn.picture(uri)?.and_then(|data| decode(&data).ok()),
+            Some(uri) => fetch(conn, uri)?.map(Rc::new),
             None => None,
         };
         Ok(())
+    }
+
+    /// Shows an already-fetched cover, identified by `key`.
+    pub fn set(&mut self, key: &str, visual: Option<Rc<Visual>>) {
+        if self.song.as_deref() == Some(key) {
+            return;
+        }
+        self.hide();
+        self.song = Some(key.to_owned());
+        self.visual = visual;
     }
 
     pub fn has_image(&self) -> bool {
@@ -85,6 +95,12 @@ impl<'nc> Art<'nc> {
         self.frame = None;
         self.shown = None;
     }
+}
+
+/// Fetches and decodes a song's cover. A cover notcurses can't decode is
+/// the same as no cover.
+pub fn fetch(conn: &mut Conn, uri: &str) -> Result<Option<Visual>> {
+    Ok(conn.picture(uri)?.and_then(|data| decode(&data).ok()))
 }
 
 /// notcurses 3.0.8 can only decode from a file, so stage the bytes in one.

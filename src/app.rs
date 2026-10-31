@@ -8,6 +8,8 @@ use std::time::{Duration, Instant};
 use anyhow::Result;
 
 use crate::art::Art;
+use crate::browser::{Browser, Entry};
+use crate::enqueue::{self, Item, Where};
 use crate::config::Config;
 use crate::keys::{Action, Ctx, Lookup};
 use crate::meta::Meta;
@@ -18,6 +20,7 @@ use crate::queue::{Displaced, Queue, Row};
 /// Idle subsystems that mean the queue changed / status may have changed.
 const QUEUE_EVENTS: &[&str] = &["playlist"];
 const STATUS_EVENTS: &[&str] = &["player", "mixer", "options", "playlist", "update"];
+const DATABASE_EVENTS: &[&str] = &["database"];
 /// Enough to refetch everything.
 pub const ALL_EVENTS: &[&str] = &["playlist", "player"];
 
@@ -61,6 +64,8 @@ pub enum Target {
     Row(Row),
     /// The fold arrow on an album header.
     Caret(usize),
+    /// A Directories entry: column (0 parent, 1 current, 2 preview), index.
+    Entry(u8, usize),
 }
 
 /// A clickable region recorded while drawing: `w` cells from (y, x).
@@ -110,6 +115,8 @@ pub struct App<'nc> {
     /// Songs that appeared right after the moved song; see `place_inserted`.
     inserted: Vec<u32>,
     pub(crate) art: Art<'nc>,
+    pub(crate) browser: Browser,
+    pub(crate) preview_art: Art<'nc>,
 }
 
 impl<'nc> App<'nc> {
@@ -135,6 +142,8 @@ impl<'nc> App<'nc> {
             displaced: None,
             inserted: Vec::new(),
             art: Art::new(nc),
+            browser: Browser::default(),
+            preview_art: Art::new(nc),
         };
         app.update(ALL_EVENTS)?;
         if let Some(cur) = app.current_pos() {
@@ -173,6 +182,9 @@ impl<'nc> App<'nc> {
             if self.follow && (song_changed || !self.can_follow()) {
                 self.primary = self.status.song_id;
             }
+        }
+        if any(DATABASE_EVENTS) && self.browser.is_open() {
+            self.browser.refresh(&mut self.conn)?;
         }
         if self.follow && !self.primary.is_some_and(|id| self.queue.pos_of_id(id).is_some()) {
             self.primary = self.status.song_id;
@@ -216,6 +228,11 @@ impl<'nc> App<'nc> {
     pub fn tick(&mut self) -> Result<()> {
         if self.is_playing() && self.fetched_at.elapsed() >= self.cfg.status_interval {
             self.poll_status()?;
+        }
+        if self.tab == Tab::Directories
+            && let Some((key, cover)) = self.browser.settle(&mut self.conn)?
+        {
+            self.preview_art.set(&key, cover);
         }
         Ok(())
     }
@@ -363,6 +380,7 @@ impl<'nc> App<'nc> {
         }
         let ctx = match self.tab {
             Tab::Queue => Ctx::Queue,
+            Tab::Directories => Ctx::List,
             // The other tabs only have global keys until they're built.
             _ => Ctx::Global,
         };
@@ -386,6 +404,9 @@ impl<'nc> App<'nc> {
 
     fn act(&mut self, action: Action) -> Result<bool> {
         use Action::*;
+        if self.tab == Tab::Directories && self.act_dirs(&action)? {
+            return Ok(true);
+        }
         let s = &self.status;
         let step = self.cfg.volume_step;
         let page = self.list_height.max(2) as isize;
@@ -429,10 +450,10 @@ impl<'nc> App<'nc> {
                 let i = TABS.iter().position(|(t, _)| *t == self.tab).unwrap_or(0);
                 let n = TABS.len();
                 let i = if action == NextTab { (i + 1) % n } else { (i + n - 1) % n };
-                self.tab = TABS[i].0;
+                self.set_tab(TABS[i].0)?;
             }
             SwitchToTab(name) => match TABS.iter().find(|(_, label)| label.eq_ignore_ascii_case(&name)) {
-                Some((t, _)) => self.tab = *t,
+                Some((t, _)) => self.set_tab(*t)?,
                 None => self.say(format!("no tab named {name:?}")),
             },
             Update => {
@@ -546,6 +567,100 @@ impl<'nc> App<'nc> {
         Ok(())
     }
 
+    fn set_tab(&mut self, tab: Tab) -> Result<()> {
+        self.tab = tab;
+        if tab == Tab::Directories && !self.browser.is_open() {
+            self.browser.open_root(&mut self.conn)?;
+        }
+        Ok(())
+    }
+
+    /// Directories-tab actions. Returns false for ones it doesn't handle
+    /// (global keys like play/pause fall through).
+    fn act_dirs(&mut self, action: &Action) -> Result<bool> {
+        use Action::*;
+        let page = self.list_height.max(2) as isize;
+        let b = &mut self.browser;
+        match action {
+            Up => b.move_sel(-1),
+            Down => b.move_sel(1),
+            UpHalf => b.move_sel(-page / 2),
+            DownHalf => b.move_sel(page / 2),
+            PageUp => b.move_sel(-page),
+            PageDown => b.move_sel(page),
+            Top => b.set_sel(0),
+            Bottom => b.set_sel(usize::MAX),
+            Left => b.up(),
+            Right => _ = b.enter(&mut self.conn)?,
+            Confirm => {
+                if !b.enter(&mut self.conn)?
+                    && let Some(Entry::Song(s, _)) = b.selected()
+                {
+                    // Enter on a song: queue it and play it now.
+                    let uri = s.file.clone();
+                    self.restore()?;
+                    let pairs = self.conn.command(&format!("addid {}", crate::mpd::quote(&uri)))?;
+                    if let Some((_, id)) = pairs.iter().find(|(k, _)| k == "Id") {
+                        self.mpd(&format!("playid {id}"))?;
+                    }
+                }
+            }
+            Add | PlayNext => {
+                let targets = b.targets();
+                self.queue_uris(&targets, if *action == Add { Where::End } else { Where::Next })?;
+            }
+            AddAll => {
+                let all: Vec<String> = b.current().entries.iter().map(|e| e.uri().to_owned()).collect();
+                self.queue_uris(&all, Where::End)?;
+            }
+            Select => {
+                if let Some(u) = b.selected().map(|e| e.uri().to_owned())
+                    && !b.marked.remove(&u)
+                {
+                    b.marked.insert(u);
+                }
+                b.move_sel(1);
+            }
+            InvertSelection => {
+                let all: Vec<String> = b.current().entries.iter().map(|e| e.uri().to_owned()).collect();
+                for u in all {
+                    if !b.marked.remove(&u) {
+                        b.marked.insert(u);
+                    }
+                }
+            }
+            Close => b.marked.clear(),
+            // C on Directories: open the playing song's folder.
+            JumpToCurrent => {
+                if let Some((s, _)) = &self.song {
+                    let uri = s.file.clone();
+                    self.browser.reveal(&mut self.conn, &uri)?;
+                }
+            }
+            _ => return Ok(false),
+        }
+        Ok(true)
+    }
+
+    /// Queues songs under each database URI (folders recursively, natural
+    /// order); clears marks.
+    fn queue_uris(&mut self, uris: &[String], at: Where) -> Result<()> {
+        let mut items: Vec<Item> = Vec::new();
+        for u in uris {
+            items.extend(enqueue::db_songs(&mut self.conn, u)?.into_iter().map(|f| vec![f]));
+        }
+        if items.is_empty() {
+            return Ok(());
+        }
+        // Insert positions are relative to the real order.
+        self.restore()?;
+        let n = enqueue::enqueue(&mut self.conn, &items, at)?;
+        self.browser.marked.clear();
+        let verb = if at == Where::Next { "playing next" } else { "queued" };
+        self.say(format!("{verb}: {n} song{}", if n == 1 { "" } else { "s" }));
+        Ok(())
+    }
+
     pub fn click(&mut self, m: Mouse) -> Result<()> {
         self.prompt = None;
         let hit = self.hits.borrow().iter().find(|h| h.y == m.y && (h.x..h.x + h.w).contains(&m.x)).copied();
@@ -556,11 +671,28 @@ impl<'nc> App<'nc> {
         match hit.map(|h| (h, h.target)) {
             Some((_, Target::Volume)) if wheel_up => _ = self.act(Action::VolumeUp)?,
             Some((_, Target::Volume)) if wheel_down => _ = self.act(Action::VolumeDown)?,
+            _ if (wheel_up || wheel_down) && self.tab == Tab::Directories => {
+                self.browser.move_sel(if wheel_up { -WHEEL_ROWS } else { WHEEL_ROWS });
+            }
+            Some((_, t @ Target::Entry(col, i))) if m.button == 1 => {
+                let double = double(t, self.last_click);
+                self.last_click = if double { None } else { Some((Instant::now(), t)) };
+                match col {
+                    0 => self.browser.up(),
+                    // a click in the preview opens the folder it shows
+                    2 if !self.browser.enter(&mut self.conn)? => return Ok(()),
+                    _ => {}
+                }
+                self.browser.set_sel(i);
+                if double {
+                    self.act_dirs(&Action::Confirm)?;
+                }
+            }
             _ if (wheel_up || wheel_down) && self.tab == Tab::Queue => {
                 self.queue.move_sel(if wheel_up { -WHEEL_ROWS } else { WHEEL_ROWS });
             }
             _ if m.button != 1 => {}
-            Some((_, Target::Tab(t))) => self.tab = t,
+            Some((_, Target::Tab(t))) => self.set_tab(t)?,
             Some((h, Target::Progress)) => {
                 let d = self.status.duration.as_secs_f64();
                 if d > 0.0 && h.w > 0 {

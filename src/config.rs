@@ -65,6 +65,10 @@ pub struct Theme {
     pub progress_track: Style,
     /// start cap, elapsed, thumb, remaining, end cap
     pub progress_symbols: [String; 5],
+    /// Field names in the Directories preview.
+    pub label: Style,
+    pub dir_symbol: String,
+    pub song_symbol: String,
 }
 
 const ORANGE: Color = Color::Rgb(0xdd6f00);
@@ -98,6 +102,9 @@ impl Default for Theme {
             progress_thumb: Style::fg(Color::Rgb(0xa7ff04)),
             progress_track: Style::fg(ORANGE),
             progress_symbols: ["\u{e0b7}", "─", "\u{f189c}", " ", "\u{e0b5}"].map(String::from),
+            label: Style::fg(YELLOW),
+            dir_symbol: "🖿".into(),
+            song_symbol: "🕪".into(),
         }
     }
 }
@@ -210,6 +217,10 @@ impl Config {
 
 impl Theme {
     fn set(&mut self, name: &str, entry: ThemeEntry) -> Result<()> {
+        if let ("dir_symbol" | "song_symbol", ThemeEntry::Color(sym)) = (name, &entry) {
+            *if name == "dir_symbol" { &mut self.dir_symbol } else { &mut self.song_symbol } = sym.clone();
+            return Ok(());
+        }
         if name == "progress_symbols" {
             let ThemeEntry::Symbols(s) = entry else { bail!("expected a list of 5 strings") };
             self.progress_symbols = s;
@@ -236,6 +247,7 @@ impl Theme {
             "progress_elapsed" => &mut self.progress_elapsed,
             "progress_thumb" => &mut self.progress_thumb,
             "progress_track" => &mut self.progress_track,
+            "label" => &mut self.label,
             _ => bail!("unknown theme entry"),
         };
         *slot = match entry {

@@ -419,6 +419,8 @@ const DEFAULTS: &[(&str, &[(&str, &str)])] = &[
             ("<C-s>a", "Save(kind: Modal(all: true, duplicates_strategy: Ask))"),
             ("r", "Rate()"),
             // notmpc
+            ("t", "PlayNext"),
+            ("C", "JumpToCurrent"),
             ("<Home>", "Top"),
             ("<End>", "Bottom"),
         ],
@@ -433,7 +435,6 @@ const DEFAULTS: &[(&str, &[(&str, &str)])] = &[
             ("X", "Shuffle"),
             // notmpc
             ("<Del>", "Delete"),
-            ("t", "PlayNext"),
             ("H", "CollapseAll"),
             ("L", "ExpandAll"),
         ],

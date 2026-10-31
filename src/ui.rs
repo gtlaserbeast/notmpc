@@ -17,6 +17,7 @@ use anyhow::Result;
 use crate::app::{App, Hit, Mode, Prompt, TABS, Tab, Target};
 use crate::queue::Row;
 use crate::art::Rect;
+use crate::browser::Entry;
 use crate::config::{Style, Theme};
 use crate::mpd::State;
 use crate::nc::{self, BOLD, Color, ITALIC, Plane};
@@ -115,9 +116,16 @@ impl App<'_> {
         self.draw_progress(&mut p, 2, cols);
         self.draw_tabs(&mut p, 3, cols);
         let body = Rect { y: HEADER_ROWS, x: 0, rows: rows - HEADER_ROWS - FOOTER_ROWS, cols };
+        if self.tab != Tab::Directories {
+            self.preview_art.show(None)?;
+        }
         match self.tab {
             Tab::Queue => self.draw_queue_tab(&mut p, body)?,
-            Tab::Directories | Tab::Search => {
+            Tab::Directories => {
+                self.art.show(None)?;
+                self.draw_directories(&mut p, body)?;
+            }
+            Tab::Search => {
                 self.art.show(None)?;
                 let t = self.cfg.theme.dim;
                 put_centered(&mut p, body.y + body.rows / 2, 0, cols, "not built yet", t);
@@ -491,6 +499,191 @@ impl App<'_> {
             return;
         };
         put_segs(p, y, 1, max, &segs);
+    }
+}
+
+impl App<'_> {
+    /// rmpc-style Miller columns: parent (20%), current (38%), preview (42%).
+    fn draw_directories(&mut self, p: &mut Plane, body: Rect) -> Result<()> {
+        let t = self.cfg.theme.clone();
+        if !self.browser.is_open() {
+            return Ok(());
+        }
+        let crumbs = std::iter::once("Music")
+            .chain(self.browser.current().uri.split('/').filter(|c| !c.is_empty()))
+            .collect::<Vec<_>>()
+            .join(" / ");
+        put(p, body.y, 1, &nc::fit(&crumbs, body.cols.saturating_sub(2) as usize), t.dim);
+
+        let (top, h) = (body.y + 1, body.rows.saturating_sub(1));
+        let w0 = body.cols * 20 / 100;
+        let w1 = body.cols * 38 / 100;
+        let (x1, x2) = (w0 + 1, w0 + w1 + 2);
+        let w2 = body.cols.saturating_sub(x2);
+        for y in top..top + h {
+            put(p, y, x1 - 1, "│", t.dim);
+            put(p, y, x2 - 1, "│", t.dim);
+        }
+        self.list_height = h as usize;
+
+        if let Some(parent) = self.browser.parent() {
+            let (entries, sel) = (parent.entries.clone(), parent.sel);
+            let scroll = sel.saturating_sub(h as usize / 2);
+            self.draw_entries(p, Rect { y: top, x: 0, rows: h, cols: w0 }, &entries, Some(sel), scroll, 0, t.browse, &t);
+        }
+
+        let cur = self.browser.current();
+        let (entries, sel, mut scroll) = (cur.entries.clone(), cur.sel, cur.scroll);
+        if sel < scroll {
+            scroll = sel;
+        } else if sel >= scroll + h as usize {
+            scroll = sel + 1 - h as usize;
+        }
+        self.browser.levels.last_mut().unwrap().scroll = scroll;
+        if entries.is_empty() {
+            put(p, top, x1 + 1, "(empty)", t.dim);
+        }
+        self.draw_entries(p, Rect { y: top, x: x1, rows: h, cols: w1 }, &entries, Some(sel), scroll, 1, t.cursor, &t);
+
+        self.draw_preview(p, Rect { y: top, x: x2, rows: h, cols: w2 }, &t)
+    }
+
+    /// One column of entries. `sel_style` marks the cursor's row.
+    #[allow(clippy::too_many_arguments)]
+    fn draw_entries(
+        &self,
+        p: &mut Plane,
+        area: Rect,
+        entries: &[Entry],
+        sel: Option<usize>,
+        scroll: usize,
+        col: u8,
+        sel_style: Style,
+        t: &Theme,
+    ) {
+        let playing = self.song.as_ref().map(|(s, _)| s.file.as_str());
+        for (i, e) in entries.iter().enumerate().skip(scroll).take(area.rows as usize) {
+            let y = area.y + (i - scroll) as u32;
+            self.hit(y, area.x, area.cols, Target::Entry(col, i));
+            let is_playing = playing.is_some_and(|f| match e {
+                Entry::Dir(d) => f.starts_with(d.as_str()) && f[d.len()..].starts_with('/'),
+                Entry::Song(s, _) => s.file == f,
+            });
+            let base = if is_playing { t.current } else { t.text };
+            let selected = sel == Some(i);
+            let st = if selected { Style { bg: sel_style.bg, ..if sel_style.fg == Color::Default { base } else { sel_style } } } else { base };
+            if selected {
+                put(p, y, area.x, &" ".repeat(area.cols as usize), st);
+            }
+            let marked = self.browser.marked.contains(e.uri());
+            let (sym, label) = match e {
+                Entry::Dir(_) => (t.dir_symbol.as_str(), e.name().to_owned()),
+                Entry::Song(s, m) => {
+                    let track = m.track.map(|n| format!("{n:02} ")).unwrap_or_default();
+                    let name = if s.title.is_some() {
+                        format!("{track}{} - {}", m.artist, m.title)
+                    } else {
+                        e.name().to_owned()
+                    };
+                    (t.song_symbol.as_str(), name)
+                }
+            };
+            let lead = if marked { "+".to_owned() } else { sym.to_owned() };
+            let mut x = put(p, y, area.x + 1, &lead, if marked && !selected { t.group_header } else { st });
+            x = put(p, y, x, " ", st);
+            put(p, y, x, &nc::fit(&label, (area.x + area.cols).saturating_sub(x + 1) as usize), st);
+        }
+    }
+
+    /// The right column: cover, summary, and the folder's contents or the
+    /// song's tags.
+    fn draw_preview(&mut self, p: &mut Plane, area: Rect, t: &Theme) -> Result<()> {
+        let selected_uri = self.browser.selected().map(|e| e.uri().to_owned());
+        let Some(pv) = self.browser.preview.clone().filter(|pv| Some(&pv.uri) == selected_uri.as_ref()) else {
+            self.preview_art.show(None)?;
+            return Ok(());
+        };
+        let mut y = area.y;
+        if self.preview_art.has_image() && area.cols >= 12 {
+            let rows = (area.rows / 2).min(area.cols / 2).max(1);
+            let cols = (rows * 2).min(area.cols);
+            let r = Rect { y, x: area.x + (area.cols - cols) / 2, rows, cols };
+            self.preview_art.show(Some(r))?;
+            y += rows + 1;
+        } else {
+            self.preview_art.show(None)?;
+        }
+        let w = area.cols.saturating_sub(2);
+        let bottom = area.y + area.rows;
+
+        let songs: Vec<(&crate::mpd::Song, &crate::meta::Meta)> = pv
+            .entries
+            .iter()
+            .filter_map(|e| match e {
+                Entry::Song(s, m) => Some((&**s, &**m)),
+                Entry::Dir(_) => None,
+            })
+            .collect();
+        let format = |s: &crate::mpd::Song| {
+            let codec = s.file.rsplit_once('.').map(|(_, e)| e.to_ascii_uppercase()).unwrap_or_default();
+            s.format.as_deref().map_or(codec.clone(), |f| format!("{codec} {}", fmt_audio(f)))
+        };
+
+        match self.browser.selected() {
+            Some(Entry::Song(s, m)) => {
+                let fields = [
+                    ("Title", m.title.clone()),
+                    ("Artist", m.artist.clone()),
+                    ("Album", m.album.clone()),
+                    ("Album artist", m.album_artist.clone()),
+                    ("Year", m.year.clone()),
+                    ("Track", m.track.map(|n| n.to_string()).unwrap_or_default()),
+                    ("Disc", m.disc.map(|n| n.to_string()).unwrap_or_default()),
+                    ("Length", fmt_time(s.duration)),
+                    ("Format", format(s)),
+                    ("File", s.file.clone()),
+                ];
+                for (label, value) in fields.iter().filter(|(_, v)| !v.is_empty()) {
+                    if y >= bottom {
+                        break;
+                    }
+                    let segs: Segs = vec![(format!("{label}: "), t.label), (value.clone(), italic_if(t.text, m.inferred))];
+                    put_segs(p, y, area.x + 1, w, &segs);
+                    y += 1;
+                }
+            }
+            Some(Entry::Dir(_)) => {
+                if let Some((first, m)) = songs.first() {
+                    let total: Duration = songs.iter().map(|(s, _)| s.duration).sum();
+                    let mut l1: Segs = vec![(m.album.clone(), italic_if(t.group_header, m.inferred))];
+                    if !m.year.is_empty() {
+                        l1.push((format!(" ({})", m.year), t.date));
+                    }
+                    if y < bottom {
+                        put_segs(p, y, area.x + 1, w, &l1);
+                        y += 1;
+                    }
+                    let n = songs.len();
+                    let l2 = format!(
+                        "{} · {n} track{} · {} · {}",
+                        m.album_artist,
+                        if n == 1 { "" } else { "s" },
+                        fmt_time(total),
+                        format(first)
+                    );
+                    if y < bottom {
+                        put(p, y, area.x + 1, &nc::fit(&l2, w as usize), t.dim);
+                        y += 2;
+                    }
+                }
+                let rows = bottom.saturating_sub(y);
+                if rows > 0 {
+                    self.draw_entries(p, Rect { y, x: area.x, rows, cols: area.cols }, &pv.entries, None, 0, 2, t.cursor, t);
+                }
+            }
+            None => {}
+        }
+        Ok(())
     }
 }
 
