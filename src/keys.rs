@@ -43,6 +43,8 @@ pub enum Action {
     ToggleFollow,
     /// notmpc: love the playing song on Last.fm (via mpdscribble).
     Love,
+    /// notmpc: show / hide the spectrum behind the header.
+    ToggleVisualizer,
     /// notmpc: nudge the visualizer's delay to match the speakers.
     VisualizerDelayDown,
     VisualizerDelayUp,
@@ -134,6 +136,7 @@ impl FromStr for Action {
             "Partition" => Partition,
             "ToggleFollow" => ToggleFollow,
             "Love" => Love,
+            "ToggleVisualizer" => ToggleVisualizer,
             "VisualizerDelayDown" => VisualizerDelayDown,
             "VisualizerDelayUp" => VisualizerDelayUp,
             "AddRandom" => AddRandom,
@@ -378,6 +381,7 @@ const DEFAULTS: &[(&str, &[(&str, &str)])] = &[
             // notmpc
             ("F", "ToggleFollow"),
             ("*", "Love"),
+            ("V", "ToggleVisualizer"),
             ("[", "VisualizerDelayDown"),
             ("]", "VisualizerDelayUp"),
         ],

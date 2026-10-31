@@ -73,7 +73,8 @@ transparent plane above it. It needs MPD's `fifo` output:
 
 notmpc reads `$XDG_RUNTIME_DIR/mpd/visualizer.fifo` by default
 (`visualizer_fifo`), at 30 fps (`visualizer_fps`), over 3 rows
-(`visualizer_rows`). It idles when nothing plays.
+(`visualizer_rows`). It idles when nothing plays. `V` hides / shows it
+(saved); `visualizer = false` in the config turns it off from the start.
 
 **Delay.** MPD writes the FIFO as it plays, but PipeWire buffers before the
 speakers, so the bars would run ahead. notmpc timestamps the audio and
@@ -120,7 +121,7 @@ notation, so snippets carry over) and the gtlaserbeast theme.
 
 rmpc 0.11's defaults (`rmpc config`), including multi-key sequences; Search
 is on 3 since the Artists/Albums/Playlists tabs don't exist. notmpc adds `t`
-(play next), `F` (follow the highlight), `[` / `]` (visualizer delay), `*` (love), `H`/`L` (collapse/expand all albums), `h`/`l` on the queue
+(play next), `F` (follow the highlight), `V` (visualizer on/off), `[` / `]` (visualizer delay), `*` (love), `H`/`L` (collapse/expand all albums), `h`/`l` on the queue
 (collapse/expand the album under the cursor), Home/End, and Del.
 
 | key                          | action                                     |

@@ -143,6 +143,8 @@ pub struct App<'nc> {
     pub(crate) scrobble: Scrobble,
     pub(crate) overlay_plane: Option<OwnedPlane<'nc>>,
     pub(crate) viz: Option<Visualizer>,
+    /// Whether the spectrum is drawn (`viz` stays alive once started).
+    pub(crate) viz_on: bool,
     /// The spectrum's plane, and the header's above it (transparent where
     /// there's no text). Recreated when the width changes; the header's
     /// must be created after so it stacks on top.
@@ -180,11 +182,13 @@ impl<'nc> App<'nc> {
             scrobble: Scrobble::new(),
             overlay_plane: None,
             viz: None,
+            viz_on: false,
             header_plane: None,
             viz_plane: None,
         };
         if app.cfg.visualizer {
             app.viz = Some(Visualizer::new(app.cfg.visualizer_fifo.clone(), app.cfg.visualizer_delay));
+            app.viz_on = true;
         }
         app.update(ALL_EVENTS)?;
         app.scrobble.check_channel(&mut app.conn);
@@ -201,7 +205,7 @@ impl<'nc> App<'nc> {
 
     /// How long the main loop may wait for input before redrawing.
     pub fn frame_interval(&self) -> Duration {
-        if self.viz.as_ref().is_some_and(Visualizer::active) {
+        if self.viz_on && self.viz.as_ref().is_some_and(Visualizer::active) {
             Duration::from_secs(1) / self.cfg.visualizer_fps
         } else if self.is_playing() {
             Duration::from_millis(250)
@@ -611,15 +615,30 @@ impl<'nc> App<'nc> {
             ToggleRandom => self.mpd(&format!("random {}", u8::from(!s.random)))?,
             ToggleSingle => self.mpd(&format!("single {}", u8::from(!s.single)))?,
             ToggleConsume => self.mpd(&format!("consume {}", u8::from(!s.consume)))?,
+            ToggleVisualizer => {
+                // Its reader can't be stopped mid-read, so keep one and only
+                // stop drawing; starting another would split the FIFO.
+                self.viz_on = !self.viz_on;
+                if self.viz_on && self.viz.is_none() {
+                    self.viz = Some(Visualizer::new(self.cfg.visualizer_fifo.clone(), self.cfg.visualizer_delay));
+                }
+                let on = self.viz_on;
+                let mut state = crate::config::State::load();
+                state.visualizer = Some(on);
+                let saved = state.save().map_or_else(|e| format!(" (not saved: {e})"), |()| " (saved)".into());
+                self.say(format!("visualizer {}{saved}", if on { "on" } else { "off" }));
+            }
             VisualizerDelayDown | VisualizerDelayUp => {
-                let Some(viz) = self.viz.as_mut() else {
+                let Some(viz) = self.viz.as_mut().filter(|_| self.viz_on) else {
                     self.say("the visualizer is off");
                     return Ok(true);
                 };
                 let ms = viz.delay().as_millis() as i64 + if action == VisualizerDelayUp { 10 } else { -10 };
                 let ms = ms.clamp(0, 2000) as u64;
                 viz.set_delay(Duration::from_millis(ms));
-                let saved = crate::config::State { visualizer_delay_ms: Some(ms) }.save();
+                let mut state = crate::config::State::load();
+                state.visualizer_delay_ms = Some(ms);
+                let saved = state.save();
                 self.say(match saved {
                     Ok(()) => format!("visualizer delay {ms} ms (saved)"),
                     Err(e) => format!("visualizer delay {ms} ms (not saved: {e})"),

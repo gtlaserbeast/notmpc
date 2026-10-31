@@ -127,6 +127,7 @@ impl Default for Theme {
 #[serde(default)]
 pub struct State {
     pub visualizer_delay_ms: Option<u64>,
+    pub visualizer: Option<bool>,
 }
 
 impl State {
@@ -249,8 +250,12 @@ impl Config {
     /// Loads the config file if there is one, then the saved state.
     pub fn load() -> Result<Self> {
         let mut cfg = Self::load_config()?;
-        if let Some(ms) = State::load().visualizer_delay_ms {
+        let state = State::load();
+        if let Some(ms) = state.visualizer_delay_ms {
             cfg.visualizer_delay = Duration::from_millis(ms);
+        }
+        if let Some(on) = state.visualizer {
+            cfg.visualizer = on;
         }
         Ok(cfg)
     }

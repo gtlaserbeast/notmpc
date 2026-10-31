@@ -170,7 +170,7 @@ impl App<'_> {
         vp.erase();
         let rows = self.cfg.visualizer_rows;
         let stops = self.cfg.theme.visualizer_colors.clone();
-        if let Some(viz) = self.viz.as_mut().filter(|_| self.offline.is_none()) {
+        if let Some(viz) = self.viz.as_mut().filter(|_| self.offline.is_none() && self.viz_on) {
             let bars = viz.frame(cols as usize);
             for (x, &b) in bars.iter().enumerate() {
                 let eighths = (b * (rows * 8) as f32).round() as u32;
