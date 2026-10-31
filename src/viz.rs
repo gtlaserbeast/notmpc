@@ -140,7 +140,7 @@ fn read_loop(fifo: &PathBuf, shared: &Mutex<Shared>) {
             carry.extend_from_slice(&raw[..n]);
             let frames = carry.len() / 4;
             let mut s = shared.lock().unwrap();
-            for fr in carry[..frames * 4].chunks_exact(4) {
+            for fr in carry[..frames * 4].as_chunks::<4>().0 {
                 let l = i16::from_le_bytes([fr[0], fr[1]]) as f32;
                 let r = i16::from_le_bytes([fr[2], fr[3]]) as f32;
                 s.samples.push((l + r) / (2.0 * 32768.0));
