@@ -121,8 +121,8 @@ give your own stops:
     # visualizer_colors = ["2", "4"]   # terminal palette slots: follows the
     #                                  # terminal's theme (read at startup)
 
-Cost while playing, at 173×45: at 30 fps about 1% of a core for notmpc
-plus 1.2% for kitty; 20 fps cuts both by about a third. Every frame costs
+Cost while playing, at 173×45 in kitty with the defaults (braille, 20 fps):
+about 0.65% of a core for notmpc plus 0.9% for kitty. Every frame costs
 about the same however much changed (notcurses composes the whole screen,
 kitty repaints the window), so `visualizer_fps` is the knob. Frames that
 look the same as the last aren't sent, and nothing is when paused. With the
