@@ -155,10 +155,12 @@ impl Nc {
     }
 
     /// Whether the terminal was resized (or we were resumed) since the last
-    /// call; then call `refresh` before drawing. notcurses 3.0.8's own
-    /// handling clears the screen *after* the next render, which in kitty
-    /// frees the images just drawn, and only re-places them; and its
-    /// NCKEY_RESIZE isn't delivered until the next keypress.
+    /// call; then call `refresh` and re-blit pixel planes before drawing.
+    /// notcurses' own handling clears the screen after the next render,
+    /// which in kitty frees the images, and then only re-places them; and
+    /// its NCKEY_RESIZE waits for the next keypress when the signal lands
+    /// on another thread (our MPD idle thread predates `notcurses_init`).
+    /// See upstream/ for the reports.
     pub fn take_resize(&self) -> bool {
         RESIZED.swap(false, Ordering::Relaxed)
     }
