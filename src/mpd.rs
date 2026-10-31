@@ -226,8 +226,11 @@ pub struct Status {
     pub duration: Duration,
     /// None when MPD has no mixer.
     pub volume: Option<u8>,
-    /// Queue position of the current song.
+    /// Queue position and id of the current song.
     pub song_pos: Option<usize>,
+    pub song_id: Option<u32>,
+    /// Id of the song MPD will play next.
+    pub next_id: Option<u32>,
     /// kbps, while playing.
     pub bitrate: Option<u32>,
     /// `samplerate:bits:channels`, while playing.
@@ -255,6 +258,8 @@ impl Status {
                 "elapsed" => s.elapsed = secs(v),
                 "duration" => s.duration = secs(v),
                 "song" => s.song_pos = v.parse().ok(),
+                "songid" => s.song_id = v.parse().ok(),
+                "nextsongid" => s.next_id = v.parse().ok(),
                 "bitrate" => s.bitrate = v.parse().ok().filter(|&b| b > 0),
                 "audio" => s.audio = Some(v.clone()),
                 "updating_db" => s.updating = true,

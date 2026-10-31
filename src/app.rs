@@ -1,17 +1,18 @@
-//! App state and what each action does. Drawing lives in `ui.rs`.
+//! App state and what each action does. Drawing lives in `ui.rs`; the
+//! queue's display state lives in `queue.rs`.
 
 use std::cell::RefCell;
-use std::collections::HashSet;
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
 
 use crate::art::Art;
 use crate::config::Config;
-use crate::keys::Action;
+use crate::keys::{Action, Ctx, Lookup};
 use crate::meta::Meta;
 use crate::mpd::{Ack, Conn, Song, State, Status};
 use crate::nc::{Input, Mouse, Nc};
+use crate::queue::{Displaced, Queue, Row};
 
 /// Idle subsystems that mean the queue changed / status may have changed.
 const QUEUE_EVENTS: &[&str] = &["playlist"];
@@ -21,6 +22,13 @@ pub const ALL_EVENTS: &[&str] = &["playlist", "player"];
 
 /// How long a message stays in the footer.
 const MESSAGE_TTL: Duration = Duration::from_secs(4);
+/// Two clicks on the same row within this count as a double-click.
+const DOUBLE_CLICK: Duration = Duration::from_millis(400);
+/// Rows the mouse wheel moves the queue cursor.
+const WHEEL_ROWS: isize = 3;
+/// How long the cursor must rest before playback follows it, so scrolling
+/// past songs doesn't reorder the queue on every step.
+const FOLLOW_DELAY: Duration = Duration::from_millis(350);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Tab {
@@ -35,34 +43,13 @@ pub const TABS: [(Tab, &str); 3] = [
     (Tab::Search, "Search"),
 ];
 
-/// A line in the queue list: an album header or a song (index into `queue`).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Row {
-    Group(usize),
-    Song(usize),
-}
-
-/// A run of consecutive queue entries from one album.
-#[derive(Clone, Debug)]
-pub struct Group {
-    pub first: usize,
-    pub len: usize,
-    pub total: Duration,
-    /// Tracks by more than one artist (show the artist per track).
-    pub various: bool,
-}
-
-/// Two clicks on the same row within this count as a double-click.
-const DOUBLE_CLICK: Duration = Duration::from_millis(400);
-/// Rows the mouse wheel moves the queue cursor.
-const WHEEL_ROWS: isize = 3;
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Mode {
     Repeat,
     Random,
     Consume,
     Single,
+    Follow,
 }
 
 /// What's under a clickable region.
@@ -74,6 +61,8 @@ pub enum Target {
     Mode(Mode),
     Volume,
     Row(Row),
+    /// The fold arrow on an album header.
+    Caret(usize),
 }
 
 /// A clickable region recorded while drawing: `w` cells from (y, x).
@@ -96,19 +85,9 @@ pub struct App<'nc> {
     pub(crate) conn: Conn,
     pub(crate) status: Status,
     pub(crate) song: Option<(Song, Meta)>,
-    pub(crate) queue: Vec<Song>,
-    pub(crate) metas: Vec<Meta>,
-    pub(crate) groups: Vec<Group>,
-    pub(crate) rows: Vec<Row>,
-    /// `rows` index of each queue entry.
-    pub(crate) song_row: Vec<usize>,
+    pub(crate) queue: Queue,
     pub(crate) fetched_at: Instant,
     pub(crate) tab: Tab,
-    /// Queue cursor (a queue index) and the first visible row.
-    pub(crate) sel: usize,
-    pub(crate) scroll: usize,
-    /// Marked songs, by queue id.
-    pub(crate) marked: HashSet<u32>,
     pub(crate) prompt: Option<Prompt>,
     pub(crate) message: Option<(String, Instant)>,
     /// Why MPD is unreachable, while it is.
@@ -118,7 +97,15 @@ pub struct App<'nc> {
     /// Clickable regions from the last frame (drawing only has `&self` in
     /// places, hence the RefCell).
     pub(crate) hits: RefCell<Vec<Hit>>,
-    last_click: Option<(Instant, Row)>,
+    last_click: Option<(Instant, Target)>,
+    /// Keys typed so far of a multi-key binding (`g` of `gg`).
+    pub(crate) pending: Vec<Input>,
+    /// Playback follows the cursor: the song under it plays next.
+    pub(crate) follow: bool,
+    /// The playing song, moved by `retarget` to just before the cursor's song.
+    displaced: Option<Displaced>,
+    /// When the cursor last moved by hand, until `retarget` acts on it.
+    moved_at: Option<Instant>,
     pub(crate) art: Art<'nc>,
 }
 
@@ -126,30 +113,27 @@ impl<'nc> App<'nc> {
     pub fn new(nc: &'nc Nc, cfg: Config, conn: Conn) -> Result<Self> {
         let mut app = Self {
             nc,
+            queue: Queue::new(cfg.group_by_album),
+            follow: cfg.follow_cursor,
             cfg,
             conn,
             status: Status::default(),
             song: None,
-            queue: Vec::new(),
-            metas: Vec::new(),
-            groups: Vec::new(),
-            rows: Vec::new(),
-            song_row: Vec::new(),
             fetched_at: Instant::now(),
             tab: Tab::Queue,
-            sel: 0,
-            scroll: 0,
-            marked: HashSet::new(),
             prompt: None,
             message: None,
             offline: None,
             list_height: 20,
             hits: RefCell::new(Vec::new()),
             last_click: None,
+            pending: Vec::new(),
+            displaced: None,
+            moved_at: None,
             art: Art::new(nc),
         };
         app.update(ALL_EVENTS)?;
-        app.sel = app.status.song_pos.unwrap_or(0);
+        app.cursor_to_upcoming();
         Ok(app)
     }
 
@@ -161,14 +145,10 @@ impl<'nc> App<'nc> {
     pub fn update<S: AsRef<str>>(&mut self, changed: &[S]) -> Result<()> {
         let any = |set: &[&str]| changed.iter().any(|c| set.contains(&c.as_ref()));
         if any(QUEUE_EVENTS) {
-            self.queue = Song::parse_list(&self.conn.command("playlistinfo")?);
-            self.metas = self.queue.iter().map(Meta::of).collect();
-            self.regroup();
-            self.sel = self.sel.min(self.queue.len().saturating_sub(1));
-            let ids: HashSet<u32> = self.queue.iter().filter_map(|s| s.id).collect();
-            self.marked.retain(|id| ids.contains(id));
+            self.fetch_queue()?;
         }
         if any(STATUS_EVENTS) {
+            let before = self.status.song_id;
             self.status = Status::parse(&self.conn.command("status")?);
             self.song = Song::parse(&self.conn.command("currentsong")?).map(|s| {
                 let m = Meta::of(&s);
@@ -176,34 +156,97 @@ impl<'nc> App<'nc> {
             });
             self.fetched_at = Instant::now();
             self.art.load(&mut self.conn, self.song.as_ref().map(|(s, _)| s.file.as_str()))?;
+
+            let song_changed = before.is_some() && self.status.song_id != before;
+            // The moved song is done playing, or following no longer applies.
+            if self.displaced.is_some_and(|d| Some(d.id) != self.status.song_id) || !self.can_follow() {
+                self.restore()?;
+            }
+            if song_changed && self.follow {
+                self.cursor_to_upcoming();
+            }
         }
         Ok(())
     }
 
-    fn regroup(&mut self) {
-        self.groups.clear();
-        self.rows.clear();
-        self.song_row.clear();
-        for (i, m) in self.metas.iter().enumerate() {
-            let same = |g: &Group| {
-                let first = &self.metas[g.first];
-                first.album == m.album && first.album_artist == m.album_artist
-            };
-            match self.groups.last_mut() {
-                Some(g) if self.cfg.group_by_album && same(g) => {
-                    g.len += 1;
-                    g.total += self.queue[i].duration;
-                    g.various |= self.metas[g.first].artist != m.artist;
-                }
-                _ => {
-                    if self.cfg.group_by_album {
-                        self.rows.push(Row::Group(self.groups.len()));
-                    }
-                    self.groups.push(Group { first: i, len: 1, total: self.queue[i].duration, various: false });
-                }
-            }
-            self.song_row.push(self.rows.len());
-            self.rows.push(Row::Song(i));
+    fn fetch_queue(&mut self) -> Result<()> {
+        let songs = Song::parse_list(&self.conn.command("playlistinfo")?);
+        self.queue.set_songs(songs, self.displaced);
+        Ok(())
+    }
+
+    /// Called every loop iteration.
+    pub fn tick(&mut self) -> Result<()> {
+        if self.moved_at.is_some_and(|t| t.elapsed() >= FOLLOW_DELAY) {
+            self.moved_at = None;
+            self.retarget()?;
+        }
+        Ok(())
+    }
+
+    /// Following only makes sense when MPD plays the queue in order.
+    fn can_follow(&self) -> bool {
+        let s = &self.status;
+        self.follow && !s.random && !s.single && s.state != State::Stop
+    }
+
+    /// Makes the cursor's song play next, foobar2000-style, without
+    /// interrupting the current one and keeping the queue's order: the
+    /// playing song moves to just before it (MPD then flows into it
+    /// gaplessly and continues from there), and moves back home once the
+    /// next song starts. The display always shows the original order.
+    fn retarget(&mut self) -> Result<()> {
+        if !self.can_follow() {
+            return Ok(());
+        }
+        let (Some(cur_id), Some(target)) = (self.status.song_id, self.queue.selected_first_song()) else {
+            return Ok(());
+        };
+        self.fetch_queue()?;
+        let Some(cur) = self.queue.pos_of_id(cur_id) else { return Ok(()) };
+        if target == cur || Some(target) == self.queue.display_next(cur) {
+            return self.restore();
+        }
+        if self.displaced.is_none() {
+            let after = self.queue.display_prev(cur).and_then(|p| self.queue.songs[p].id);
+            self.displaced = Some(Displaced { id: cur_id, after });
+        }
+        let to = if cur < target { target - 1 } else { target };
+        if to != cur {
+            self.mpd(&format!("moveid {cur_id} {to}"))?;
+        }
+        self.fetch_queue()
+    }
+
+    /// Moves the displaced song back to its home position.
+    fn restore(&mut self) -> Result<()> {
+        let Some(d) = self.displaced.take() else { return Ok(()) };
+        self.fetch_queue()?;
+        let Some(m) = self.queue.pos_of_id(d.id) else { return Ok(()) };
+        let to = match d.after.map(|a| self.queue.pos_of_id(a)) {
+            None => 0,
+            Some(Some(a)) if a < m => a + 1,
+            Some(Some(a)) => a,
+            // Its neighbour is gone; leave it where it is.
+            Some(None) => return Ok(()),
+        };
+        if to != m {
+            self.mpd(&format!("moveid {} {to}", d.id))?;
+        }
+        self.fetch_queue()
+    }
+
+    /// Puts the cursor on the song that plays after the current one.
+    fn cursor_to_upcoming(&mut self) {
+        let Some(cur) = self.status.song_pos.filter(|&p| p < self.queue.songs.len()) else { return };
+        let next = if self.follow { self.queue.display_next(cur).unwrap_or(cur) } else { cur };
+        self.queue.sel = self.queue.row_of_song(next);
+    }
+
+    /// The cursor moved by hand: playback follows once it settles.
+    fn cursor_moved(&mut self) {
+        if self.follow {
+            self.moved_at = Some(Instant::now());
         }
     }
 
@@ -241,17 +284,32 @@ impl<'nc> App<'nc> {
         if let Some(prompt) = self.prompt.take() {
             if input.id == 'y' as u32 && !input.ctrl {
                 match prompt {
-                    Prompt::ClearQueue => self.mpd("clear")?,
+                    Prompt::ClearQueue => {
+                        self.displaced = None;
+                        self.mpd("clear")?;
+                    }
                 }
             }
             return Ok(true);
         }
-        let action = match self.tab {
-            Tab::Queue => self.cfg.keys.queue_action(input),
+        let ctx = match self.tab {
+            Tab::Queue => Ctx::Queue,
             // The other tabs only have global keys until they're built.
-            _ => self.cfg.keys.global.get(&input),
+            _ => Ctx::Global,
         };
-        match action.cloned() {
+        self.pending.push(input);
+        let action = match self.cfg.keys.lookup(ctx, &self.pending) {
+            Lookup::Action(a) => Some(a.clone()),
+            Lookup::Prefix => return Ok(true),
+            // A key that doesn't continue the sequence starts a new one.
+            Lookup::None if self.pending.len() > 1 => {
+                self.pending.clear();
+                return self.handle(input);
+            }
+            Lookup::None => None,
+        };
+        self.pending.clear();
+        match action {
             Some(a) => self.act(a),
             None => Ok(true),
         }
@@ -261,6 +319,7 @@ impl<'nc> App<'nc> {
         use Action::*;
         let s = &self.status;
         let step = self.cfg.volume_step;
+        let page = self.list_height.max(2) as isize;
         match action {
             Quit => return Ok(false),
             TogglePause => {
@@ -269,7 +328,11 @@ impl<'nc> App<'nc> {
             }
             Stop => self.mpd("stop")?,
             NextTrack => self.mpd("next")?,
-            PreviousTrack => self.mpd("previous")?,
+            PreviousTrack => {
+                // "previous" means the song before it in the real order
+                self.restore()?;
+                self.mpd("previous")?;
+            }
             SeekForward => self.mpd(&format!("seekcur +{}", self.cfg.seek_step))?,
             SeekBack => self.mpd(&format!("seekcur -{}", self.cfg.seek_step))?,
             VolumeUp | VolumeDown => match s.volume {
@@ -283,6 +346,15 @@ impl<'nc> App<'nc> {
             ToggleRandom => self.mpd(&format!("random {}", u8::from(!s.random)))?,
             ToggleSingle => self.mpd(&format!("single {}", u8::from(!s.single)))?,
             ToggleConsume => self.mpd(&format!("consume {}", u8::from(!s.consume)))?,
+            ToggleFollow => {
+                self.follow = !self.follow;
+                if self.follow {
+                    self.cursor_moved();
+                } else {
+                    self.restore()?;
+                }
+                self.say(if self.follow { "playback follows cursor" } else { "playback follows the queue" });
+            }
             NextTab | PreviousTab => {
                 let i = TABS.iter().position(|(t, _)| *t == self.tab).unwrap_or(0);
                 let n = TABS.len();
@@ -302,50 +374,124 @@ impl<'nc> App<'nc> {
                 self.say("rescanning database…");
             }
 
-            Up => self.move_sel(-1),
-            Down => self.move_sel(1),
-            UpHalf => self.move_sel(-(self.list_height as isize / 2).max(1)),
-            DownHalf => self.move_sel((self.list_height as isize / 2).max(1)),
-            Top => self.sel = 0,
-            Bottom => self.sel = self.queue.len().saturating_sub(1),
-            Confirm | Play => {
-                if let Some(id) = self.selected_id() {
-                    self.mpd(&format!("playid {id}"))?;
+            Up | Down | UpHalf | DownHalf | PageUp | PageDown => {
+                let by = match action {
+                    Up => -1,
+                    Down => 1,
+                    UpHalf => -page / 2,
+                    DownHalf => page / 2,
+                    PageUp => -page,
+                    _ => page,
+                };
+                self.queue.move_sel(by);
+                self.cursor_moved();
+            }
+            Top | Bottom => {
+                self.queue.sel = if action == Top { 0 } else { self.queue.rows.len().saturating_sub(1) };
+                self.cursor_moved();
+            }
+            Left => match self.queue.selected() {
+                Some(Row::Group(g)) => self.queue.set_collapsed(g, true),
+                Some(Row::Song(q)) if self.queue.grouping => {
+                    let g = self.queue.group_of_song(q);
+                    self.queue.set_collapsed(g, true);
+                }
+                _ => {}
+            },
+            Right => {
+                if let Some(Row::Group(g)) = self.queue.selected() {
+                    self.queue.set_collapsed(g, false);
                 }
             }
+            CollapseAll => self.queue.set_all_collapsed(true),
+            ExpandAll => self.queue.set_all_collapsed(false),
+            Confirm | Play => self.play_selected()?,
             Delete => self.delete()?,
             DeleteAll => self.prompt = Some(Prompt::ClearQueue),
             MoveUp | MoveDown => self.move_song(action == MoveUp)?,
-            JumpToCurrent => self.sel = self.status.song_pos.unwrap_or(self.sel),
-            Shuffle => self.mpd("shuffle")?,
-            Select => {
-                if let Some(id) = self.selected_id()
-                    && !self.marked.remove(&id)
-                {
-                    self.marked.insert(id);
+            JumpToCurrent => {
+                if let Some(cur) = self.status.song_pos.filter(|&p| p < self.queue.songs.len()) {
+                    self.queue.sel = self.queue.row_of_song(cur);
+                    self.cursor_moved();
                 }
-                self.move_sel(1);
+            }
+            Shuffle => {
+                self.displaced = None;
+                self.mpd("shuffle")?;
+            }
+            Select => {
+                let ids: Vec<u32> = self.queue.selected_songs().iter().filter_map(|&q| self.queue.songs[q].id).collect();
+                let all_marked = ids.iter().all(|id| self.queue.marked.contains(id));
+                for id in ids {
+                    if all_marked {
+                        self.queue.marked.remove(&id);
+                    } else {
+                        self.queue.marked.insert(id);
+                    }
+                }
+                self.queue.move_sel(1);
+                self.cursor_moved();
             }
             InvertSelection => {
-                self.marked = self.queue.iter().filter_map(|s| s.id).filter(|id| !self.marked.contains(id)).collect();
+                let q = &mut self.queue;
+                q.marked = q.songs.iter().filter_map(|s| s.id).filter(|id| !q.marked.contains(id)).collect();
             }
-            Close => self.marked.clear(),
-            Left | Right | PaneUp | PaneDown | PaneLeft | PaneRight => {}
-            Unbind => {}
+            Close => self.queue.marked.clear(),
+            PaneUp | PaneDown | PaneLeft | PaneRight | Unbind => {}
             other => self.say(format!("{other:?} isn't implemented yet")),
         }
         Ok(true)
+    }
+
+    fn play_selected(&mut self) -> Result<()> {
+        if let Some(id) = self.queue.selected_first_song().and_then(|q| self.queue.songs[q].id) {
+            self.mpd(&format!("playid {id}"))?;
+        }
+        Ok(())
+    }
+
+    /// Deletes the marked songs, or what's under the cursor (a song, or a
+    /// whole album on its header).
+    fn delete(&mut self) -> Result<()> {
+        let ids: Vec<u32> = if self.queue.marked.is_empty() {
+            self.queue.selected_songs().iter().filter_map(|&q| self.queue.songs[q].id).collect()
+        } else {
+            self.queue.marked.drain().collect()
+        };
+        let cmds: Vec<String> = ids.iter().map(|id| format!("deleteid {id}")).collect();
+        match self.conn.command_list(&cmds) {
+            Err(e) if e.is::<Ack>() => self.say(e.to_string()),
+            r => r?,
+        }
+        Ok(())
+    }
+
+    /// Swaps the cursor's song with its neighbour in the real queue order.
+    fn move_song(&mut self, up: bool) -> Result<()> {
+        self.restore()?;
+        let Some(Row::Song(q)) = self.queue.selected() else { return Ok(()) };
+        let Some(id) = self.queue.songs[q].id else { return Ok(()) };
+        let to = if up { q.checked_sub(1) } else { Some(q + 1).filter(|&p| p < self.queue.songs.len()) };
+        if let Some(to) = to {
+            self.mpd(&format!("moveid {id} {to}"))?;
+            self.fetch_queue()?;
+        }
+        Ok(())
     }
 
     pub fn click(&mut self, m: Mouse) -> Result<()> {
         self.prompt = None;
         let hit = self.hits.borrow().iter().find(|h| h.y == m.y && (h.x..h.x + h.w).contains(&m.x)).copied();
         let (wheel_up, wheel_down) = (m.button == 4, m.button == 5);
+        let double = |t: Target, last: Option<(Instant, Target)>| {
+            last.is_some_and(|(at, prev)| prev == t && at.elapsed() < DOUBLE_CLICK)
+        };
         match hit.map(|h| (h, h.target)) {
             Some((_, Target::Volume)) if wheel_up => _ = self.act(Action::VolumeUp)?,
             Some((_, Target::Volume)) if wheel_down => _ = self.act(Action::VolumeDown)?,
             _ if (wheel_up || wheel_down) && self.tab == Tab::Queue => {
-                self.move_sel(if wheel_up { -WHEEL_ROWS } else { WHEEL_ROWS });
+                self.queue.move_sel(if wheel_up { -WHEEL_ROWS } else { WHEEL_ROWS });
+                self.cursor_moved();
             }
             _ if m.button != 1 => {}
             Some((_, Target::Tab(t))) => self.tab = t,
@@ -362,58 +508,28 @@ impl<'nc> App<'nc> {
                     Mode::Random => Action::ToggleRandom,
                     Mode::Consume => Action::ToggleConsume,
                     Mode::Single => Action::ToggleSingle,
+                    Mode::Follow => Action::ToggleFollow,
                 };
                 self.act(a)?;
             }
-            Some((_, Target::Row(row))) => {
-                let i = match row {
-                    Row::Song(i) => i,
-                    Row::Group(g) => self.groups[g].first,
-                };
-                let double = self.last_click.is_some_and(|(at, r)| r == row && at.elapsed() < DOUBLE_CLICK);
-                self.sel = i;
-                if double {
+            Some((_, Target::Caret(g))) => {
+                let collapse = !self.queue.collapsed.contains(&self.queue.groups[g].key);
+                self.queue.set_collapsed(g, collapse);
+            }
+            Some((_, t @ Target::Row(row))) => {
+                if let Some(r) = self.queue.rows.iter().position(|&x| x == row) {
+                    self.queue.sel = r;
+                }
+                if double(t, self.last_click) {
                     self.last_click = None;
-                    self.act(Action::Play)?;
+                    self.moved_at = None;
+                    self.play_selected()?;
                 } else {
-                    self.last_click = Some((Instant::now(), row));
+                    self.last_click = Some((Instant::now(), t));
+                    self.cursor_moved();
                 }
             }
             _ => {}
-        }
-        Ok(())
-    }
-
-    fn move_sel(&mut self, by: isize) {
-        let last = self.queue.len().saturating_sub(1);
-        self.sel = self.sel.saturating_add_signed(by).min(last);
-    }
-
-    fn selected_id(&self) -> Option<u32> {
-        self.queue.get(self.sel).and_then(|s| s.id)
-    }
-
-    /// Deletes the marked songs, or the selected one when nothing is marked.
-    fn delete(&mut self) -> Result<()> {
-        let ids: Vec<u32> = if self.marked.is_empty() {
-            self.selected_id().into_iter().collect()
-        } else {
-            self.marked.drain().collect()
-        };
-        let cmds: Vec<String> = ids.iter().map(|id| format!("deleteid {id}")).collect();
-        match self.conn.command_list(&cmds) {
-            Err(e) if e.is::<Ack>() => self.say(e.to_string()),
-            r => r?,
-        }
-        Ok(())
-    }
-
-    fn move_song(&mut self, up: bool) -> Result<()> {
-        let Some(id) = self.selected_id() else { return Ok(()) };
-        let to = if up { self.sel.checked_sub(1) } else { Some(self.sel + 1).filter(|&p| p < self.queue.len()) };
-        if let Some(to) = to {
-            self.mpd(&format!("moveid {id} {to}"))?;
-            self.sel = to;
         }
         Ok(())
     }

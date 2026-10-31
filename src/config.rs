@@ -103,6 +103,8 @@ pub struct Config {
     /// Share of the queue tab's width given to album art, in percent.
     pub art_width: u32,
     pub group_by_album: bool,
+    /// Playback follows the queue cursor (toggle with ToggleFollow).
+    pub follow_cursor: bool,
     pub keys: Keymap,
     pub theme: Theme,
 }
@@ -114,6 +116,7 @@ impl Default for Config {
             seek_step: 5,
             art_width: 45,
             group_by_album: true,
+            follow_cursor: true,
             keys: Keymap::defaults(),
             theme: Theme::default(),
         }
@@ -127,6 +130,7 @@ struct File {
     seek_step: Option<u32>,
     art_width: Option<u32>,
     group_by_album: Option<bool>,
+    follow_cursor: Option<bool>,
     keys: HashMap<String, HashMap<String, String>>,
     theme: HashMap<String, ThemeEntry>,
 }
@@ -177,6 +181,9 @@ impl Config {
         }
         if let Some(v) = file.group_by_album {
             cfg.group_by_album = v;
+        }
+        if let Some(v) = file.follow_cursor {
+            cfg.follow_cursor = v;
         }
         for (section, entries) in &file.keys {
             cfg.keys.merge(section, entries).with_context(|| path.display().to_string())?;

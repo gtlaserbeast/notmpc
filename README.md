@@ -21,34 +21,49 @@ notation, so snippets carry over) and the gtlaserbeast theme.
 
 ## Keys
 
-Defaults, as in rmpc:
+rmpc 0.11's defaults (`rmpc config`), including multi-key sequences; Search
+is on 3 since the Artists/Albums/Playlists tabs don't exist. notmpc adds `F`
+(follow cursor), `H`/`L` (collapse/expand all albums), `h`/`l` on the queue
+(collapse/expand the album under the cursor), Home/End, and Del.
 
-| key                     | action                                    |
-|-------------------------|-------------------------------------------|
-| 1 / 2 / 3, Tab / S-Tab  | Queue / Directories / Search, cycle tabs  |
-| p                       | play / pause                              |
-| s                       | stop                                      |
-| > / <                   | next / previous                           |
-| f / b                   | seek ±5s                                  |
-| . / ,                   | volume ±5                                 |
-| z x c v                 | repeat / random / consume / single        |
-| u / U                   | update / rescan database                  |
-| q                       | quit                                      |
-| j / k, ↓ / ↑            | move                                      |
-| C-d / C-u, PgDn / PgUp  | half page                                 |
-| g / G                   | top / bottom                              |
-| Enter                   | play                                      |
-| Space / C-Space         | mark / invert marks                       |
-| d                       | delete (marked songs, else the cursor)    |
-| D                       | clear the queue (asks first)              |
-| J / K                   | move song down / up                       |
-| C                       | jump to current song                      |
-| X                       | shuffle                                   |
-| Esc                     | clear marks                               |
+| key                          | action                                     |
+|------------------------------|--------------------------------------------|
+| 1 / 2 / 3, Tab / S-Tab, gt/gT | Queue / Directories / Search, cycle tabs  |
+| p / s                        | play-pause / stop                          |
+| > / <                        | next / previous                            |
+| f / b                        | seek ±5s                                   |
+| . / ,                        | volume ±5                                  |
+| z x c v                      | repeat / random / consume / single         |
+| F                            | playback follows cursor (see below)        |
+| C-u / C-U                    | update / rescan (C-u is half-page in lists) |
+| ?, oI, oo, op                | help, song info, outputs, decoders (TODO)  |
+| q                            | quit                                       |
+| j / k, ↓ / ↑                 | move                                       |
+| C-d / C-u, C-f / C-b         | half page / page                           |
+| gg / G                       | top / bottom                               |
+| h / l                        | collapse / expand album                    |
+| H / L                        | collapse / expand all albums               |
+| Enter                        | play (an album header plays the album)     |
+| Space / C-Space              | mark / invert marks                        |
+| d / D                        | delete / clear queue (asks first)          |
+| J / K                        | move song down / up                        |
+| C                            | jump to current song                       |
+| X                            | shuffle                                    |
+| Esc                          | clear marks                                |
 
-Mouse: click a tab, a queue row (double-click plays), a mode word in the
-header (toggles it), or the progress bar (seeks there); the wheel scrolls
-the queue, or changes volume over the volume ramp.
+**Playback follows cursor** (foobar2000-style, on by default): the song under
+the queue cursor plays next, without cutting the current one short, and
+playback carries on from there. When a song starts, the cursor moves to the
+one after it, so leaving the cursor alone plays the queue in order. The `»`
+marker and the footer show what's next. Under the hood the playing song is
+moved to just before the chosen one (so MPD's transition stays gapless) and
+moved back when the next song starts; the display always shows the real
+order. Off in random or single mode.
+
+Mouse: click a tab, a queue row (double-click plays; on an album header,
+plays the album), an album's ▾/▸ arrow (collapses / expands it), a mode word
+in the header (toggles it), or the progress bar (seeks there); the wheel
+scrolls the queue, or changes volume over the volume ramp.
 
 Untagged files show artist, album, year, and title guessed from the path,
 in italics.

@@ -14,9 +14,10 @@ use std::time::Duration;
 
 use anyhow::Result;
 
-use crate::app::{App, Hit, Mode, Prompt, Row, TABS, Tab, Target};
+use crate::app::{App, Hit, Mode, Prompt, TABS, Tab, Target};
+use crate::queue::Row;
 use crate::art::Rect;
-use crate::config::Style;
+use crate::config::{Style, Theme};
 use crate::mpd::State;
 use crate::nc::{self, BOLD, Color, ITALIC, Plane};
 
@@ -205,6 +206,7 @@ impl App<'_> {
             ("Random", s.random, Mode::Random),
             ("Consume", s.consume, Mode::Consume),
             ("Single", s.single, Mode::Single),
+            ("Follow", self.follow, Mode::Follow),
         ];
         let mut right1: Segs = Vec::new();
         for (i, (name, on, _)) in modes.iter().enumerate() {
@@ -295,42 +297,65 @@ impl App<'_> {
 
         // Keep the cursor visible, along with its album header when there's
         // one directly above it.
-        let target = self.song_row[self.sel];
-        let top = match target.checked_sub(1).map(|r| self.rows[r]) {
+        let q = &mut self.queue;
+        let target = q.sel;
+        let top = match target.checked_sub(1).map(|r| q.rows[r]) {
             Some(Row::Group(_)) => target - 1,
             _ => target,
         };
-        if top < self.scroll {
-            self.scroll = top;
-        } else if target >= self.scroll + h {
-            self.scroll = target + 1 - h;
+        if top < q.scroll {
+            q.scroll = top;
+        } else if target >= q.scroll + h {
+            q.scroll = target + 1 - h;
         }
-        self.scroll = self.scroll.min(self.rows.len().saturating_sub(h));
+        q.scroll = q.scroll.min(q.rows.len().saturating_sub(h));
 
         let w = area.cols;
-        for (line, row) in self.rows.iter().enumerate().skip(self.scroll).take(h) {
-            let y = area.y + (line - self.scroll) as u32;
-            self.hit(y, area.x, area.cols, Target::Row(*row));
-            match *row {
-                Row::Group(g) => self.draw_group_header(p, y, area.x, w, g, &t),
-                Row::Song(i) => self.draw_song_row(p, y, area.x, w, i, &t),
+        let scroll = self.queue.scroll;
+        for line in scroll..(scroll + h).min(self.queue.rows.len()) {
+            let row = self.queue.rows[line];
+            let y = area.y + (line - scroll) as u32;
+            let cursor = line == self.queue.sel;
+            if let Row::Group(g) = row {
+                self.hit(y, area.x, 2, Target::Caret(g));
+            }
+            self.hit(y, area.x, area.cols, Target::Row(row));
+            match row {
+                Row::Group(g) => self.draw_group_header(p, y, area.x, w, g, cursor, &t),
+                Row::Song(i) => self.draw_song_row(p, y, area.x, w, i, cursor, &t),
             }
         }
     }
 
-    fn draw_group_header(&self, p: &mut Plane, y: u32, x: u32, w: u32, g: usize, t: &crate::config::Theme) {
-        let group = &self.groups[g];
-        let m = &self.metas[group.first];
-        let mut left: Segs = vec![(
-            if m.album.is_empty() { "(no album)".into() } else { m.album.clone() },
-            italic_if(t.group_header, m.inferred),
-        )];
+    #[allow(clippy::too_many_arguments)]
+    fn draw_group_header(&self, p: &mut Plane, y: u32, x: u32, w: u32, g: usize, cursor: bool, t: &Theme) {
+        let q = &self.queue;
+        let group = &q.groups[g];
+        let m = &q.metas[q.order[group.start]];
+        let collapsed = q.collapsed.contains(&group.key);
+        let playing_here =
+            self.status.song_pos.is_some_and(|c| c < q.songs.len() && q.group_of_song(c) == g);
+        let st = |s: Style| italic_if(if cursor { t.cursor } else { s }, m.inferred);
+        if cursor {
+            put(p, y, x, &" ".repeat(w as usize), t.cursor);
+        }
+
+        // A collapsed album that's playing gets the ▶ on its header.
+        let caret = match (collapsed, playing_here) {
+            (true, true) => "▶ ",
+            (true, false) => "▸ ",
+            (false, _) => "▾ ",
+        };
+        let mut left: Segs = vec![
+            (caret.into(), if cursor { t.cursor } else { t.dim }),
+            (if m.album.is_empty() { "(no album)".into() } else { m.album.clone() }, st(t.group_header)),
+        ];
         if !m.year.is_empty() {
-            left.push((format!(" ({})", m.year), italic_if(t.date, m.inferred)));
+            left.push((format!(" ({})", m.year), st(t.date)));
         }
         let artist = if group.various { "Various Artists" } else { &m.album_artist };
         if !artist.is_empty() {
-            left.push((format!(" · {artist}"), italic_if(t.text, m.inferred)));
+            left.push((format!(" · {artist}"), st(t.text)));
         }
         let tracks = if group.len == 1 { "1 track".into() } else { format!("{} tracks", group.len) };
         let right = format!(" {tracks} · {} ", fmt_time(group.total));
@@ -338,16 +363,18 @@ impl App<'_> {
 
         let lx = put_segs(p, y, x, w.saturating_sub(rw + 2), &left);
         let fill = (x + w).saturating_sub(lx + rw + 1);
-        put(p, y, lx + 1, &"─".repeat(fill as usize), t.dim);
-        put(p, y, x + w - rw, &right, t.dim);
+        put(p, y, lx + 1, &"─".repeat(fill as usize), if cursor { t.cursor } else { t.dim });
+        put(p, y, x + w - rw, &right, if cursor { t.cursor } else { t.dim });
     }
 
-    fn draw_song_row(&self, p: &mut Plane, y: u32, x: u32, w: u32, i: usize, t: &crate::config::Theme) {
-        let song = &self.queue[i];
-        let m = &self.metas[i];
-        let cursor = i == self.sel;
+    #[allow(clippy::too_many_arguments)]
+    fn draw_song_row(&self, p: &mut Plane, y: u32, x: u32, w: u32, i: usize, cursor: bool, t: &Theme) {
+        let q = &self.queue;
+        let song = &q.songs[i];
+        let m = &q.metas[i];
         let current = self.status.song_pos == Some(i);
-        let marked = song.id.is_some_and(|id| self.marked.contains(&id));
+        let next = !current && song.id.is_some() && song.id == self.status.next_id;
+        let marked = song.id.is_some_and(|id| q.marked.contains(&id));
 
         // The cursor and current-song styles override the column styles.
         let over = if cursor {
@@ -362,12 +389,20 @@ impl App<'_> {
             put(p, y, x, &" ".repeat(w as usize), t.cursor);
         }
 
-        let marker = if current { "▶ " } else if marked { "+ " } else { "  " };
+        let (marker, marker_style) = if current {
+            ("▶ ", st(t.text))
+        } else if next {
+            ("» ", st(t.progress_thumb))
+        } else if marked {
+            ("+ ", st(t.group_header))
+        } else {
+            ("  ", st(t.text))
+        };
         let time = format!("{:>6} ", fmt_time(song.duration));
         let inner = w.saturating_sub(2 + 7) as usize;
 
-        let cols: Vec<(String, usize, Style)> = if self.cfg.group_by_album {
-            let various = self.groups.iter().rev().find(|g| g.first <= i).is_some_and(|g| g.various);
+        let cols: Vec<(String, usize, Style)> = if q.grouping {
+            let various = q.groups[q.group_of_song(i)].various;
             let track = m.track.map_or(String::new(), |n| format!("{n:>2}"));
             let rest = inner.saturating_sub(4);
             if various {
@@ -391,8 +426,7 @@ impl App<'_> {
             ]
         };
 
-        let mx = put(p, y, x, marker, if marked && !current { st(t.group_header) } else { st(t.text) });
-        let mut cx = mx;
+        let mut cx = put(p, y, x, marker, marker_style);
         for (text, width, style) in cols {
             let s = nc::fit(&text, width.saturating_sub(1));
             put(p, y, cx, &s, style);
@@ -403,11 +437,12 @@ impl App<'_> {
 
     fn draw_footer(&self, p: &mut Plane, y: u32, cols: u32) {
         let t = &self.cfg.theme;
-        let n = self.queue.len();
-        let total: Duration = self.queue.iter().map(|s| s.duration).sum();
+        let q = &self.queue;
+        let n = q.songs.len();
+        let total: Duration = q.songs.iter().map(|s| s.duration).sum();
         let mut right = format!("{n} song{} · {}", if n == 1 { "" } else { "s" }, fmt_time(total));
-        if let Some(pos) = self.status.song_pos.filter(|_| self.status.state != State::Stop) {
-            let after: Duration = self.queue.iter().skip(pos + 1).map(|s| s.duration).sum();
+        if let Some(pos) = self.status.song_pos.filter(|&p| self.status.state != State::Stop && p < n) {
+            let after: Duration = q.order[q.display_of[pos] + 1..].iter().map(|&i| q.songs[i].duration).sum();
             let left = after + self.status.duration.saturating_sub(self.elapsed());
             right += &format!(" · {} left", fmt_time(left));
         }
@@ -415,20 +450,36 @@ impl App<'_> {
         let rw = nc::width(&right) as u32;
         put(p, y, cols.saturating_sub(rw), &right, t.dim);
 
-        let max = cols.saturating_sub(rw + 2) as usize;
-        let (msg, style) = if let Some(why) = &self.offline {
-            (format!("MPD unreachable, retrying… ({why})"), t.current)
+        let max = cols.saturating_sub(rw + 2);
+        let next_song = || {
+            let id = self.status.next_id?;
+            let i = q.pos_of_id(id)?;
+            let m = &q.metas[i];
+            Some(m.title.clone() + if m.artist.is_empty() { "" } else { " — " } + &m.artist)
+        };
+        let segs: Segs = if let Some(why) = &self.offline {
+            vec![(format!("MPD unreachable, retrying… ({why})"), t.current)]
         } else if let Some(Prompt::ClearQueue) = self.prompt {
-            ("Clear the whole queue? (y/N)".to_owned(), t.current)
+            vec![("Clear the whole queue? (y/N)".to_owned(), t.current)]
+        } else if !self.pending.is_empty() {
+            vec![(format!("{}…", self.pending.iter().map(key_name).collect::<String>()), t.group_header)]
         } else if let Some(m) = self.current_message() {
-            (m.to_owned(), t.text)
-        } else if !self.marked.is_empty() {
-            (format!("{} selected", self.marked.len()), t.group_header)
+            vec![(m.to_owned(), t.text)]
+        } else if !q.marked.is_empty() {
+            vec![(format!("{} selected", q.marked.len()), t.group_header)]
+        } else if let Some(next) = next_song().filter(|_| self.status.state != State::Stop) {
+            vec![("next: ".to_owned(), t.dim), (next, t.text)]
         } else {
             return;
         };
-        put(p, y, 1, &nc::fit(&msg, max), style);
+        put_segs(p, y, 1, max, &segs);
     }
+}
+
+/// How a typed key looks in the footer while a sequence is pending.
+fn key_name(k: &crate::nc::Input) -> String {
+    let c = char::from_u32(k.id).filter(|_| crate::nc::key::is_printable(k.id)).unwrap_or('?');
+    if k.ctrl { format!("<C-{c}>") } else { c.to_string() }
 }
 
 /// Left- and right-aligned segments with a centred one between, the centre

@@ -5,6 +5,7 @@ mod keys;
 mod meta;
 mod mpd;
 mod nc;
+mod queue;
 mod ui;
 
 use std::sync::mpsc::{self, Receiver};
@@ -107,6 +108,9 @@ fn main() -> Result<()> {
         if !changed.is_empty()
             && let Err(e) = app.update(&changed)
         {
+            app.say(format!("MPD: {e:#}"));
+        }
+        if let Err(e) = app.tick() {
             app.say(format!("MPD: {e:#}"));
         }
     }
