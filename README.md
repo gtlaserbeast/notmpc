@@ -43,7 +43,8 @@ track. The playing song and the folders containing it are highlighted.
 
 Mouse: click to select, double-click to open / play, click the left column
 to go up, click an entry in the preview to open its folder. Adding starts
-playback on the first new song if nothing is playing.
+playback on the first new song if MPD is stopped (a paused song keeps
+its place).
 
 ## Search
 
@@ -138,7 +139,7 @@ playback control, volume and the rest, `mpc` already does the job.
 
 Directories are walked in natural order (`Disc 2` before `Disc 10`).
 Files under MPD's music directory (symlinks resolved) are added by
-database URI, others as `file://`. If nothing is playing, the first new
+database URI, others as `file://`. If MPD is stopped, the first new
 song starts. For yazi:
 
     [[mgr.prepend_keymap]]

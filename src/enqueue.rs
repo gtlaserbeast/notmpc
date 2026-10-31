@@ -1,6 +1,7 @@
 //! Adding songs to the queue, shared by `notmpc add/insert` and the
 //! Directories tab: natural order, appended or placed after the current
-//! song, and playback started on the first new song if nothing is playing.
+//! song, and playback started on the first new song if MPD is stopped (a
+//! paused song keeps its place).
 
 use std::cmp::Ordering;
 
@@ -30,7 +31,7 @@ pub fn enqueue(conn: &mut Conn, items: &[Item], at: Where) -> Result<Vec<u32>> {
         let pos = insert_at.map(|p| format!(" {}", p + i)).unwrap_or_default();
         ids.extend(add_one(conn, item, &pos)?);
     }
-    if status.state != State::Play
+    if status.state == State::Stop
         && let Some(id) = ids.first()
     {
         conn.command(&format!("playid {id}"))?;

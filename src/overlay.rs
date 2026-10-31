@@ -191,14 +191,19 @@ impl Overlay {
         }
     }
 
-    /// Toggles the selected output; returns the MPD command for it.
-    pub fn toggle(&mut self) -> Option<String> {
-        let Kind::Outputs(outs) = &mut self.kind else { return None };
-        let o = outs.get_mut(self.sel)?;
-        o.enabled = !o.enabled;
-        let cmd = format!("{} {}", if o.enabled { "enableoutput" } else { "disableoutput" }, o.id);
-        self.relabel();
-        Some(cmd)
+    /// The MPD command that toggles the selected output.
+    pub fn toggle(&self) -> Option<String> {
+        let Kind::Outputs(outs) = &self.kind else { return None };
+        let o = outs.get(self.sel)?;
+        Some(format!("{} {}", if o.enabled { "disableoutput" } else { "enableoutput" }, o.id))
+    }
+
+    /// Takes the outputs from a fresh listing, keeping the selection.
+    pub fn reload_outputs(&mut self, fresh: Overlay) {
+        let (sel, scroll) = (self.sel, self.scroll);
+        *self = fresh;
+        self.sel = sel.min(self.lines.len().saturating_sub(1));
+        self.scroll = scroll;
     }
 }
 

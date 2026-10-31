@@ -169,9 +169,9 @@ impl<'nc> App<'nc> {
             primary: None,
             displaced: None,
             inserted: Vec::new(),
-            art: Art::new(nc),
+            art: Art::new(nc, crate::art::MAX_PX),
             browser: Browser::default(),
-            preview_art: Art::new(nc),
+            preview_art: Art::new(nc, crate::art::PREVIEW_MAX_PX),
             search: Search::new(),
             overlay: None,
             overlay_plane: None,
@@ -254,7 +254,10 @@ impl<'nc> App<'nc> {
                 (s, m)
             });
             self.fetched_at = Instant::now();
-            self.art.load(&mut self.conn, self.song.as_ref().map(|(s, _)| s.file.as_str()))?;
+            // A cover that won't load mustn't hold up the rest.
+            if let Err(e) = self.art.load(&mut self.conn, self.song.as_ref().map(|(s, _)| s.file.as_str())) {
+                self.say(format!("cover: {e:#}"));
+            }
 
             let song_changed = self.status.song_id != before;
             // The moved song is done playing, or following no longer applies.
@@ -322,7 +325,7 @@ impl<'nc> App<'nc> {
         }
         if self.tab == Tab::Directories && self.browser.moved_at.is_some() {
             if let Some((key, cover)) = self.browser.settle(&mut self.conn)? {
-                self.preview_art.set(&key, cover);
+                self.preview_art.set(&key, cover.as_deref());
             }
             changed |= self.browser.moved_at.is_none();
         }
@@ -527,16 +530,24 @@ impl<'nc> App<'nc> {
             Some(PageDown) => o.move_by(page, page as usize),
             Some(Top) => o.move_by(isize::MIN / 2, page as usize),
             Some(Bottom) => o.move_by(isize::MAX / 2, page as usize),
-            Some(Confirm | Select) => {
-                if let Some(cmd) = o.toggle() {
-                    self.mpd(&cmd)?;
-                }
-            }
+            Some(Confirm | Select) => self.toggle_output()?,
             _ if input.id == crate::nc::key::ESC || (input.id == 'q' as u32 && !input.ctrl) => self.overlay = None,
             Some(Close | Quit | ShowHelp | ShowInfo | ShowCurrentSongInfo | ShowOutputs | ShowDecoders) => {
                 self.overlay = None;
             }
             _ => {}
+        }
+        Ok(())
+    }
+
+    /// Toggles the output selected in the outputs panel, then shows what
+    /// MPD actually did (it may refuse).
+    fn toggle_output(&mut self) -> Result<()> {
+        let Some(cmd) = self.overlay.as_ref().and_then(Overlay::toggle) else { return Ok(()) };
+        self.mpd(&cmd)?;
+        let fresh = Overlay::outputs(&mut self.conn)?;
+        if let Some(o) = self.overlay.as_mut() {
+            o.reload_outputs(fresh);
         }
         Ok(())
     }
@@ -905,9 +916,7 @@ impl<'nc> App<'nc> {
                 _ if m.button == 5 => o.move_by(WHEEL_ROWS, rows),
                 Some(Target::OverlayLine(i)) if m.button == 1 && o.selectable() => {
                     o.sel = i;
-                    if let Some(cmd) = o.toggle() {
-                        self.mpd(&cmd)?;
-                    }
+                    self.toggle_output()?;
                 }
                 Some(Target::OverlayPanel | Target::OverlayLine(_)) => {}
                 // a click outside the panel closes it

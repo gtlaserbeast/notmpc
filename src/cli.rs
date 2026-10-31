@@ -9,7 +9,7 @@
 //! - add: appends to the queue.
 //! - insert: places the songs right after the current one.
 //!
-//! If nothing is playing, the first new song starts.
+//! If MPD is stopped, the first new song starts.
 
 use std::fs;
 use std::io::{IsTerminal, Write};

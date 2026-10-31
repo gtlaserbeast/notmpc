@@ -51,7 +51,7 @@ fn spawn_idle(target: Target) -> Result<Receiver<MpdEvent>> {
     let (tx, rx) = mpsc::channel();
     thread::spawn(move || {
         loop {
-            let ev = match conn.command("idle player mixer options playlist update database subscription") {
+            let ev = match conn.command("idle player mixer options playlist update database") {
                 Ok(pairs) => MpdEvent::Changed(pairs.into_iter().map(|(_, v)| v).collect()),
                 Err(e) => {
                     if tx.send(MpdEvent::Lost(format!("{e:#}"))).is_err() {

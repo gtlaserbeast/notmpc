@@ -840,56 +840,45 @@ impl App<'_> {
 impl App<'_> {
     /// rmpc-style Miller columns: parent (20%), current (38%), preview (42%).
     fn draw_directories(&mut self, p: &mut Plane, body: Rect) -> Result<()> {
-        let t = self.cfg.theme.clone();
         if !self.browser.is_open() {
             return Ok(());
         }
+        let (top, h) = (body.y + 1, body.rows.saturating_sub(1));
+        let w0 = body.cols * 20 / 100;
+        let w1 = body.cols * 38 / 100;
+        let (x1, x2) = (w0 + 1, w0 + w1 + 2);
+        self.list_height = h as usize;
+        // keep the cursor in view
+        let cur = self.browser.levels.last_mut().expect("browser is open");
+        if cur.sel < cur.scroll {
+            cur.scroll = cur.sel;
+        } else if cur.sel >= cur.scroll + h as usize {
+            cur.scroll = cur.sel + 1 - h as usize;
+        }
+
+        let t = &self.cfg.theme;
         let crumbs = std::iter::once("Music")
             .chain(self.browser.current().uri.split('/').filter(|c| !c.is_empty()))
             .collect::<Vec<_>>()
             .join(" / ");
         put(p, body.y, 1, &nc::fit(&crumbs, body.cols.saturating_sub(2) as usize), t.dim);
-
-        let (top, h) = (body.y + 1, body.rows.saturating_sub(1));
-        let w0 = body.cols * 20 / 100;
-        let w1 = body.cols * 38 / 100;
-        let (x1, x2) = (w0 + 1, w0 + w1 + 2);
-        let w2 = body.cols.saturating_sub(x2);
         for y in top..top + h {
             put(p, y, x1 - 1, "│", t.dim);
             put(p, y, x2 - 1, "│", t.dim);
         }
-        self.list_height = h as usize;
-
         if let Some(parent) = self.browser.parent() {
-            let (entries, sel) = (parent.entries.clone(), parent.sel);
-            let scroll = sel.saturating_sub(h as usize / 2);
-            self.draw_entries(
-                p,
-                Rect { y: top, x: 0, rows: h, cols: w0 },
-                &entries,
-                Some(sel),
-                scroll,
-                0,
-                t.browse,
-                &t,
-            );
+            let scroll = parent.sel.saturating_sub(h as usize / 2);
+            let area = Rect { y: top, x: 0, rows: h, cols: w0 };
+            self.draw_entries(p, area, &parent.entries, Some(parent.sel), scroll, 0, t.browse);
         }
-
         let cur = self.browser.current();
-        let (entries, sel, mut scroll) = (cur.entries.clone(), cur.sel, cur.scroll);
-        if sel < scroll {
-            scroll = sel;
-        } else if sel >= scroll + h as usize {
-            scroll = sel + 1 - h as usize;
-        }
-        self.browser.levels.last_mut().unwrap().scroll = scroll;
-        if entries.is_empty() {
+        if cur.entries.is_empty() {
             put(p, top, x1 + 1, "(empty)", t.dim);
         }
-        self.draw_entries(p, Rect { y: top, x: x1, rows: h, cols: w1 }, &entries, Some(sel), scroll, 1, t.cursor, &t);
+        let area = Rect { y: top, x: x1, rows: h, cols: w1 };
+        self.draw_entries(p, area, &cur.entries, Some(cur.sel), cur.scroll, 1, t.cursor);
 
-        self.draw_preview(p, Rect { y: top, x: x2, rows: h, cols: w2 }, &t)
+        self.draw_preview(p, Rect { y: top, x: x2, rows: h, cols: body.cols.saturating_sub(x2) })
     }
 
     /// One column of entries. `sel_style` marks the cursor's row.
@@ -903,8 +892,8 @@ impl App<'_> {
         scroll: usize,
         col: u8,
         sel_style: Style,
-        t: &Theme,
     ) {
+        let t = &self.cfg.theme;
         let playing = self.song.as_ref().map(|(s, _)| s.file.as_str());
         for (i, e) in entries.iter().enumerate().skip(scroll).take(area.rows as usize) {
             let y = area.y + (i - scroll) as u32;
@@ -945,12 +934,16 @@ impl App<'_> {
 
     /// The right column: cover, summary, and the folder's contents or the
     /// song's tags.
-    fn draw_preview(&mut self, p: &mut Plane, area: Rect, t: &Theme) -> Result<()> {
-        let selected_uri = self.browser.selected().map(|e| e.uri().to_owned());
-        let Some(pv) = self.browser.preview.clone().filter(|pv| Some(&pv.uri) == selected_uri.as_ref()) else {
+    fn draw_preview(&mut self, p: &mut Plane, area: Rect) -> Result<()> {
+        let current = self
+            .browser
+            .preview
+            .as_ref()
+            .is_some_and(|pv| Some(pv.uri.as_str()) == self.browser.selected().map(Entry::uri));
+        if !current {
             self.preview_art.show(None)?;
             return Ok(());
-        };
+        }
         let mut y = area.y;
         if self.preview_art.has_image() && area.cols >= 12 && self.overlay.is_none() {
             let rows = (area.rows / 2).min(area.cols / 2).max(1);
@@ -961,6 +954,14 @@ impl App<'_> {
         } else {
             self.preview_art.show(None)?;
         }
+        self.draw_preview_text(p, area, y);
+        Ok(())
+    }
+
+    /// The preview below the cover, from row `y`.
+    fn draw_preview_text(&self, p: &mut Plane, area: Rect, mut y: u32) {
+        let t = &self.cfg.theme;
+        let Some(pv) = &self.browser.preview else { return };
         let w = area.cols.saturating_sub(2);
         let bottom = area.y + area.rows;
 
@@ -1035,13 +1036,11 @@ impl App<'_> {
                         0,
                         2,
                         t.cursor,
-                        t,
                     );
                 }
             }
             None => {}
         }
-        Ok(())
     }
 }
 

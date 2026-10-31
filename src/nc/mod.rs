@@ -159,6 +159,11 @@ impl Nc {
         if raw.is_null() {
             bail!("notcurses_init failed");
         }
+        // Ctrl-Z, Ctrl-C and Ctrl-\ are keys, not signals: with kitty's
+        // keyboard protocol notcurses would otherwise turn Ctrl-Z into
+        // SIGSTOP, freezing a window that has no shell to resume it.
+        // SAFETY: raw is live.
+        unsafe { sys::notcurses_linesigs_disable(raw) };
         let mut rgb = 0;
         // SAFETY: raw is live; rgb is a valid out-param.
         let default_fg = if unsafe { sys::notcurses_default_foreground(raw, &mut rgb) } == 0 {

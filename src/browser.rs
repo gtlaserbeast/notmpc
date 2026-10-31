@@ -8,17 +8,19 @@ use std::time::{Duration, Instant};
 
 use anyhow::Result;
 
-use crate::art;
 use crate::enqueue::natural_cmp;
 use crate::meta::Meta;
 use crate::mpd::{Conn, Song, quote};
-use crate::nc::Visual;
 
 /// How long the cursor rests before the preview (and its cover) loads, so
 /// holding j doesn't fetch every folder on the way.
 pub const PREVIEW_DELAY: Duration = Duration::from_millis(120);
-/// Decoded covers kept for folders already previewed.
+/// Covers kept for folders already previewed, as the image files MPD
+/// sends (decoded only for the one on screen).
 const ART_CACHE: usize = 24;
+
+/// A folder's cover as MPD sent it (None: it has none).
+pub type Cover = Option<Rc<[u8]>>;
 
 #[derive(Clone, Debug)]
 pub enum Entry {
@@ -68,7 +70,7 @@ pub struct Browser {
     pub moved_at: Option<Instant>,
     /// Marked entries, by URI.
     pub marked: HashSet<String>,
-    covers: HashMap<String, Option<Rc<Visual>>>,
+    covers: HashMap<String, Cover>,
     cover_order: VecDeque<String>,
 }
 
@@ -229,7 +231,7 @@ impl Browser {
 
     /// Loads the preview for the entry under the cursor once it has
     /// rested. Returns the cover to show (`None` = no change needed).
-    pub fn settle(&mut self, conn: &mut Conn) -> Result<Option<(String, Option<Rc<Visual>>)>> {
+    pub fn settle(&mut self, conn: &mut Conn) -> Result<Option<(String, Cover)>> {
         if !self.moved_at.is_some_and(|t| t.elapsed() >= PREVIEW_DELAY) {
             return Ok(None);
         }
@@ -255,7 +257,7 @@ impl Browser {
         let Some(song) = cover_song else { return Ok(Some((String::new(), None))) };
         let key = song.rsplit_once('/').map_or("", |(d, _)| d).to_owned();
         if !self.covers.contains_key(&key) {
-            let v = art::fetch(conn, &song, art::PREVIEW_MAX_PX)?.map(Rc::new);
+            let v = conn.picture(&song)?.map(Rc::from);
             self.covers.insert(key.clone(), v);
             self.cover_order.push_back(key.clone());
             if self.cover_order.len() > ART_CACHE
@@ -274,7 +276,9 @@ impl Browser {
             // keep listing order where possible
             let mut v: Vec<String> =
                 l.entries.iter().map(|e| e.uri().to_owned()).filter(|u| self.marked.contains(u)).collect();
-            let rest: Vec<String> = self.marked.iter().filter(|u| !v.contains(u)).cloned().collect();
+            // marks left in other folders: in path order
+            let mut rest: Vec<String> = self.marked.iter().filter(|u| !v.contains(u)).cloned().collect();
+            rest.sort_by(|a, b| natural_cmp(a, b));
             v.extend(rest);
             return v;
         }
@@ -285,5 +289,19 @@ impl Browser {
 fn toggle(set: &mut HashSet<String>, u: String) {
     if !set.remove(&u) {
         set.insert(u);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn targets_keep_listing_order_then_other_folders_in_path_order() {
+        let dirs = |v: &[&str]| v.iter().map(|d| Entry::Dir((*d).to_owned())).collect();
+        let mut b = Browser::default();
+        b.levels.push(Level { uri: "B".into(), entries: dirs(&["B/a", "B/b", "B/c"]), ..Default::default() });
+        b.marked = ["A/10", "B/c", "A/2", "B/a", "C/1"].map(String::from).into();
+        assert_eq!(b.targets(), ["B/a", "B/c", "A/2", "A/10", "C/1"]);
     }
 }
