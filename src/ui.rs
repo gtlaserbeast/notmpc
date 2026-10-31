@@ -412,7 +412,12 @@ impl App<'_> {
     }
 
     fn draw_queue_tab(&mut self, p: &mut Plane, body: Rect) -> Result<()> {
-        let art_cols = if body.cols >= MIN_ART_COLS { body.cols * self.cfg.art_width / 100 } else { 0 };
+        // Wide enough for a square cover to fill the height, up to the
+        // configured share of the width.
+        let (ch, cw) = self.nc.cell_px().unwrap_or((20, 10));
+        let square = (body.rows * ch).div_ceil(cw);
+        let art_cols =
+            if body.cols >= MIN_ART_COLS { square.min(body.cols * self.cfg.art_width / 100) } else { 0 };
         if art_cols > 0 {
             let art = Rect { y: body.y, x: 0, rows: body.rows, cols: art_cols };
             if self.art.has_image() && self.overlay.is_none() {

@@ -173,7 +173,8 @@ impl State {
 pub struct Config {
     pub volume_step: u8,
     pub seek_step: u32,
-    /// Share of the queue tab's width given to album art, in percent.
+    /// The most of the queue tab's width album art may take, in percent;
+    /// it takes what a square cover needs to fill the height.
     pub art_width: u32,
     pub group_by_album: bool,
     /// Playback follows the queue cursor (toggle with ToggleFollow).
@@ -208,7 +209,7 @@ impl Default for Config {
         Self {
             volume_step: 5,
             seek_step: 5,
-            art_width: 45,
+            art_width: 60,
             group_by_album: true,
             follow_cursor: true,
             status_update_interval_ms: 1000,
