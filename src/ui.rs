@@ -17,7 +17,7 @@ use anyhow::Result;
 use crate::app::{App, Hit, List, Mode, Prompt, TABS, Tab, Target};
 use crate::art::Rect;
 use crate::browser::Entry;
-use crate::config::{ProgressBar, Style, Theme};
+use crate::config::{ProgressBar, Style, Theme, VisualizerStyle};
 use crate::mpd::State;
 use crate::nc::{self, BOLD, Color, ITALIC, Plane};
 use crate::pixelbar;
@@ -183,61 +183,80 @@ impl App<'_> {
         Ok(())
     }
 
-    /// One bar per column, rising from the bottom of the header in eighth
-    /// blocks; full cells are drawn as background so text over them keeps
-    /// the colour. Each bar is one colour: the palette's gradient across the
-    /// spectrum, brighter the taller it is (no banding between rows).
-    /// Unless `force`, leaves the plane alone (and returns false) when the
-    /// frame would look the same as the last.
+    /// The spectrum, rising from the bottom of the header. `blocks`: a bar
+    /// per column in eighth blocks, full cells drawn as background so text
+    /// over them keeps the colour. `braille`: two bars per column, one per
+    /// dot column, in quarter-cell steps. A bar's colour is the palette's
+    /// gradient across the spectrum, brighter the taller it is. Unless
+    /// `force`, leaves the plane alone (and returns false) when the frame
+    /// would look the same as the last.
     fn draw_viz(&mut self, cols: u32, force: bool) -> bool {
-        const PARTIAL: [&str; 8] = [" ", "▁", "▂", "▃", "▄", "▅", "▆", "▇"];
         let Some(mut vp) = self.viz_plane.take() else { return false };
         let rows = vp.dim_yx().0;
-        // (eighths lit, brightness step) per column: all a frame shows
-        let cells: Vec<(u32, u8)> = match self.viz.as_mut().filter(|_| self.offline.is_none() && self.viz_on) {
-            // brightness in four steps, so a lit cell's colour changes (and
-            // is re-sent) only when its bar crosses one
+        let braille = self.cfg.visualizer_style == VisualizerStyle::Braille;
+        let (per_col, steps) = if braille { (2, 4) } else { (1, 8) };
+        // (steps lit, brightness step) per bar: all a frame shows. Four
+        // brightness steps, so a lit cell's colour changes (and is
+        // re-sent) only when its bar crosses one.
+        let bars: Vec<(u32, u8)> = match self.viz.as_mut().filter(|_| self.offline.is_none() && self.viz_on) {
             Some(viz) => viz
-                .frame(cols as usize)
+                .frame((cols * per_col) as usize)
                 .iter()
-                .map(|&b| ((b * (rows * 8) as f32).round() as u32, (b * 4.0).round() as u8))
+                .map(|&b| ((b * (rows * steps) as f32).round() as u32, (b * 4.0).round() as u8))
                 .collect(),
             None => Vec::new(),
         };
-        if !force && cells == self.viz_shown {
+        if !force && bars == self.viz_shown {
             self.viz_plane = Some(vp);
             return false;
         }
         vp.erase();
         let stops: Vec<u32> =
             self.cfg.theme.visualizer_colors.iter().map(|&c| self.nc.rgb(c).unwrap_or(0x8a8a8a)).collect();
-        for (x, &(eighths, level)) in cells.iter().enumerate() {
-            if eighths == 0 {
+        // Dim enough for the header text on top to stay readable.
+        let colour = |x: u32, level: u8| {
+            Color::Rgb(scale(gradient(&stops, x as f32 / (cols.max(2) - 1) as f32), 0.30 + 0.10 * f32::from(level)))
+        };
+        for (x, col) in bars.chunks(per_col as usize).enumerate() {
+            let x = x as u32;
+            let (lit, level) = col.iter().fold((0, 0), |(l, v), &(n, b)| (l.max(n), v.max(b)));
+            if lit == 0 {
                 continue;
             }
-            // Dim enough for the header text on top to stay readable.
-            let c = Color::Rgb(scale(
-                gradient(&stops, x as f32 / (cols.max(2) - 1) as f32),
-                0.30 + 0.10 * f32::from(level),
-            ));
+            vp.set_fg(colour(x, level));
             for r in 0..rows {
-                let filled = eighths.saturating_sub(r * 8).min(8);
-                if filled == 0 {
-                    break;
-                }
                 let y = rows - 1 - r;
-                vp.set_fg(c);
-                if filled == 8 {
-                    vp.set_bg(c);
-                    vp.putstr_yx(y, x as u32, " ");
-                } else {
+                let fill = |n: u32| n.saturating_sub(r * steps).min(steps) as usize;
+                if braille {
+                    // dots filled from the bottom of the cell: left column, right column
+                    const LEFT: [u32; 5] = [0, 0x40, 0x44, 0x46, 0x47];
+                    const RIGHT: [u32; 5] = [0, 0x80, 0xa0, 0xb0, 0xb8];
+                    let (l, rt) = (fill(col[0].0), fill(col.get(1).map_or(0, |c| c.0)));
+                    if l == 0 && rt == 0 {
+                        break;
+                    }
+                    let ch = char::from_u32(0x2800 + (LEFT[l] | RIGHT[rt])).unwrap_or(' ');
                     vp.set_bg(Color::Default);
                     vp.set_bg_transparent();
-                    vp.putstr_yx(y, x as u32, PARTIAL[filled as usize]);
+                    vp.putstr_yx(y, x, ch.encode_utf8(&mut [0; 4]));
+                } else {
+                    const PARTIAL: [&str; 8] = [" ", "▁", "▂", "▃", "▄", "▅", "▆", "▇"];
+                    match fill(lit) {
+                        0 => break,
+                        8 => {
+                            vp.set_bg(colour(x, level));
+                            vp.putstr_yx(y, x, " ");
+                        }
+                        f => {
+                            vp.set_bg(Color::Default);
+                            vp.set_bg_transparent();
+                            vp.putstr_yx(y, x, PARTIAL[f]);
+                        }
+                    }
                 }
             }
         }
-        self.viz_shown = cells;
+        self.viz_shown = bars;
         self.viz_plane = Some(vp);
         true
     }

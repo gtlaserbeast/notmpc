@@ -97,8 +97,10 @@ transparent plane above it. It needs MPD's `fifo` output:
     }
 
 notmpc reads `$XDG_RUNTIME_DIR/mpd/visualizer.fifo` by default
-(`visualizer_fifo`), at 30 fps (`visualizer_fps`), over 3 rows
-(`visualizer_rows`). It idles when nothing plays. `V` hides / shows it
+(`visualizer_fifo`), at 20 fps (`visualizer_fps`), over 3 rows
+(`visualizer_rows`). `visualizer_style = "braille"` draws two bars per
+column in braille dots (twice the detail, the same cost) instead of the
+default `"blocks"`. It idles when nothing plays. `V` hides / shows it
 (saved); `visualizer = false` in the config turns it off from the start.
 
 **Delay.** MPD writes the FIFO as it plays, but PipeWire buffers before the
@@ -118,11 +120,12 @@ give your own stops:
     # visualizer_colors = ["2", "4"]   # terminal palette slots: follows the
     #                                  # terminal's theme (read at startup)
 
-Cost at 173×45 in kitty, 30 fps, while playing: about 1% of a core for
-notmpc plus 1.2% for kitty. Frames that look the same as the last aren't
-sent, and nothing is when paused. kitty's share is mostly repainting, so
-`visualizer_fps` is the knob; with the visualizer off, notmpc and kitty
-together use about 0.25%.
+Cost while playing, at 173×45: at 30 fps about 1% of a core for notmpc
+plus 1.2% for kitty; 20 fps cuts both by about a third. Every frame costs
+about the same however much changed (notcurses composes the whole screen,
+kitty repaints the window), so `visualizer_fps` is the knob. Frames that
+look the same as the last aren't sent, and nothing is when paused. With the
+visualizer off, notmpc and kitty together use about 0.13%.
 
 ## Command line
 

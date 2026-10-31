@@ -142,7 +142,7 @@ pub struct App<'nc> {
     /// The spectrum's plane and the header's above it; see `layer_header`.
     pub(crate) header_plane: Option<OwnedPlane<'nc>>,
     pub(crate) viz_plane: Option<OwnedPlane<'nc>>,
-    /// Each column's (eighths lit, brightness step) as last drawn.
+    /// Each bar's (steps lit, brightness step) as last drawn.
     pub(crate) viz_shown: Vec<(u32, u8)>,
 }
 

@@ -177,6 +177,16 @@ pub enum ProgressBar {
     Symbols,
 }
 
+/// How the spectrum's bars are drawn.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum VisualizerStyle {
+    /// A bar per column, in eighth blocks.
+    Blocks,
+    /// Two bars per column in braille dots: twice the detail, same cost.
+    Braille,
+}
+
 /// The config file's keys, one to one; anything left out keeps its default.
 #[derive(Clone, Debug, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -198,6 +208,7 @@ pub struct Config {
     /// Header rows it fills (the header is 2 rows, plus the progress bar).
     pub visualizer_rows: u32,
     pub visualizer_fps: u32,
+    pub visualizer_style: VisualizerStyle,
     /// How far the speakers lag MPD's FIFO (PipeWire buffering). Tuned
     /// live with [ and ], which saves it to the state file.
     pub visualizer_delay_ms: u64,
@@ -227,7 +238,8 @@ impl Default for Config {
                 .map_or_else(|| PathBuf::from("/tmp"), PathBuf::from)
                 .join("mpd/visualizer.fifo"),
             visualizer_rows: 3,
-            visualizer_fps: 30,
+            visualizer_fps: 20,
+            visualizer_style: VisualizerStyle::Blocks,
             visualizer_delay_ms: 150,
             key_overrides: HashMap::new(),
             theme_overrides: HashMap::new(),
