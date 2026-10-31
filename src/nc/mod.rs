@@ -57,6 +57,26 @@ pub enum Color {
     Palette(u8),
 }
 
+/// xterm's standard value for palette entry `i`.
+fn xterm_rgb(i: u8) -> u32 {
+    const BASE: [u32; 16] = [
+        0x000000, 0xcd0000, 0x00cd00, 0xcdcd00, 0x0000ee, 0xcd00cd, 0x00cdcd, 0xe5e5e5, //
+        0x7f7f7f, 0xff0000, 0x00ff00, 0xffff00, 0x5c5cff, 0xff00ff, 0x00ffff, 0xffffff,
+    ];
+    let level = |v: u32| if v == 0 { 0 } else { 55 + 40 * v };
+    match i {
+        0..16 => BASE[i as usize],
+        16..232 => {
+            let i = u32::from(i) - 16;
+            level(i / 36) << 16 | level(i / 6 % 6) << 8 | level(i % 6)
+        }
+        _ => {
+            let g = 8 + 10 * (u32::from(i) - 232);
+            g << 16 | g << 8 | g
+        }
+    }
+}
+
 pub use sys::{NCSTYLE_BOLD as BOLD, NCSTYLE_ITALIC as ITALIC};
 
 /// What [`Nc::get`] delivers.
@@ -122,6 +142,9 @@ pub struct Nc {
     /// are see-through when composited over another plane, so planes draw
     /// default-coloured text in this instead.
     default_fg: Color,
+    /// The terminal's palette as it answered notcurses' startup queries;
+    /// None if it didn't.
+    palette: Option<Box<[u32; 256]>>,
 }
 
 impl Nc {
@@ -143,6 +166,14 @@ impl Nc {
         } else {
             Color::Palette(7)
         };
+        // SAFETY: raw is live; the copy is freed right after reading.
+        let palette = unsafe {
+            let p = sys::ncpalette_new(raw);
+            let chans = (!p.is_null()).then(|| Box::new((*p).chans.map(|c| c & 0xff_ffff)));
+            sys::ncpalette_free(p);
+            // unanswered entries stay zero
+            chans.filter(|c| c.iter().any(|&rgb| rgb != 0))
+        };
         // SAFETY: the handler only stores to an atomic.
         unsafe {
             let mut sa: libc::sigaction = std::mem::zeroed();
@@ -151,7 +182,7 @@ impl Nc {
             libc::sigaction(libc::SIGWINCH, &sa, ptr::null_mut());
             libc::sigaction(libc::SIGCONT, &sa, ptr::null_mut());
         }
-        Ok(Self { raw, default_fg })
+        Ok(Self { raw, default_fg, palette })
     }
 
     /// Whether the terminal was resized (or we were resumed) since the last
@@ -226,6 +257,16 @@ impl Nc {
             bail!("ncvisual_blit failed");
         }
         Ok(())
+    }
+
+    /// What `c` looks like, for drawing it in pixels. Palette entries the
+    /// terminal didn't report fall back to xterm's values.
+    pub fn rgb(&self, c: Color) -> Option<u32> {
+        match c {
+            Color::Default => None,
+            Color::Rgb(rgb) => Some(rgb),
+            Color::Palette(i) => Some(self.palette.as_ref().map_or_else(|| xterm_rgb(i), |p| p[usize::from(i)])),
+        }
     }
 
     /// Whether the terminal supports pixel graphics (kitty, sixel, ...).
@@ -526,4 +567,18 @@ pub fn fit(s: &str, cols: usize) -> String {
         out.push('…');
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::xterm_rgb;
+
+    #[test]
+    fn xterm_palette() {
+        assert_eq!(xterm_rgb(4), 0x0000ee);
+        assert_eq!(xterm_rgb(16), 0x000000);
+        assert_eq!(xterm_rgb(208), 0xff8700);
+        assert_eq!(xterm_rgb(236), 0x303030);
+        assert_eq!(xterm_rgb(255), 0xeeeeee);
+    }
 }

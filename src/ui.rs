@@ -322,11 +322,11 @@ impl App<'_> {
     /// The pixel bar at row `y`; hidden under an overlay's backdrop.
     fn draw_pixel_bar(&mut self, y: u32, cols: u32) -> Result<()> {
         let t = &self.cfg.theme;
-        let rgb = |s: crate::config::Style, or: u32| if let Color::Rgb(c) = s.fg { c } else { or };
+        let rgb = |s: crate::config::Style, or: u32| self.nc.rgb(s.fg).unwrap_or(or);
         let colors = pixelbar::Colors {
-            played: rgb(t.progress_elapsed, 0xdd6f00),
-            track: rgb(t.dim, 0x5a5a5a),
-            thumb: rgb(t.progress_thumb, 0xa7ff04),
+            played: rgb(t.progress_elapsed, 0x5c5cff),
+            track: rgb(t.dim, 0x7f7f7f),
+            thumb: rgb(t.progress_thumb, 0x00cdcd),
         };
         let s = &self.status;
         let stopped = s.state == State::Stop || s.duration.is_zero();

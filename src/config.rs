@@ -1,5 +1,5 @@
 //! `~/.config/notmpc/config.toml`. Every setting is optional; the defaults
-//! reproduce the user's rmpc setup (keymap and gtlaserbeast theme).
+//! are rmpc's keymap and a theme in the terminal's own palette.
 
 use std::collections::HashMap;
 use std::env;
@@ -79,44 +79,48 @@ pub struct Theme {
     pub song_symbol: String,
 }
 
-const ORANGE: Color = Color::Rgb(0xdd6f00);
-const YELLOW: Color = Color::Palette(3);
-const WHITE: Color = Color::Palette(15);
-const DARK_GRAY: Color = Color::Palette(8);
 const BLACK: Color = Color::Palette(0);
+const YELLOW: Color = Color::Palette(3);
+const BLUE: Color = Color::Palette(4);
+const CYAN: Color = Color::Palette(6);
+const DARK_GRAY: Color = Color::Palette(8);
+/// From the 256-colour grey ramp, which terminal themes leave alone.
+const SHADE: Color = Color::Palette(236);
+const DARK_SHADE: Color = Color::Palette(235);
 
 impl Default for Theme {
-    /// gtlaserbeast, as rmpc draws it.
+    /// Terminal palette colours, so it follows the terminal's theme, and
+    /// symbols any monospace font has.
     fn default() -> Self {
         Self {
             text: Style::fg(Color::Default),
-            state: Style::fg(YELLOW).bold(),
+            state: Style::fg(BLUE).bold(),
             title: Style::fg(Color::Default).bold(),
             artist: Style::fg(YELLOW).bold(),
-            volume: Style::fg(ORANGE),
-            mode_on: Style::fg(WHITE).bold(),
+            volume: Style::fg(BLUE),
+            mode_on: Style::fg(Color::Default).bold(),
             mode_off: Style::fg(DARK_GRAY),
-            tab_active: Style::fg(BLACK).on(ORANGE).bold(),
+            tab_active: Style::fg(BLACK).on(BLUE).bold(),
             tab_inactive: Style::fg(Color::Default),
-            cursor: Style::fg(BLACK).on(ORANGE).bold(),
-            browse: Style::fg(Color::Default).on(Color::Rgb(0x2e2010)),
-            browse_rail: Style::fg(Color::Rgb(0xa7ff04)).bold(),
-            current: Style::fg(ORANGE).bold(),
-            album: Style::fg(WHITE),
+            cursor: Style::fg(BLACK).on(BLUE).bold(),
+            browse: Style::fg(Color::Default).on(SHADE),
+            browse_rail: Style::fg(CYAN).bold(),
+            current: Style::fg(BLUE).bold(),
+            album: Style::fg(Color::Default),
             date: Style::fg(YELLOW),
-            group_header: Style::fg(ORANGE).bold(),
+            group_header: Style::fg(BLUE).bold(),
             dim: Style::fg(DARK_GRAY),
-            progress_elapsed: Style::fg(ORANGE),
-            progress_thumb: Style::fg(Color::Rgb(0xa7ff04)),
-            progress_track: Style::fg(ORANGE),
-            progress_symbols: ["\u{e0b7}", "─", "\u{f189c}", " ", "\u{e0b5}"].map(String::from),
+            progress_elapsed: Style::fg(BLUE),
+            progress_thumb: Style::fg(CYAN),
+            progress_track: Style::fg(DARK_GRAY),
+            progress_symbols: ["", "━", "●", "─", ""].map(String::from),
             label: Style::fg(YELLOW),
-            album_artist: Style::fg(Color::Palette(6)),
-            panel: Style::fg(Color::Default).on(Color::Rgb(0x16130f)),
-            panel_border: Style::fg(ORANGE).on(Color::Rgb(0x16130f)),
+            album_artist: Style::fg(CYAN),
+            panel: Style::fg(Color::Default).on(DARK_SHADE),
+            panel_border: Style::fg(BLUE).on(DARK_SHADE),
             visualizer_colors: palette("aurora").expect("built-in palette"),
-            dir_symbol: "🖿".into(),
-            song_symbol: "🕪".into(),
+            dir_symbol: "▸".into(),
+            song_symbol: "♪".into(),
         }
     }
 }
@@ -431,6 +435,11 @@ mod tests {
         assert_eq!(parse_color("dark_gray").unwrap(), Color::Palette(8));
         assert_eq!(parse_color("default").unwrap(), Color::Default);
         assert!(parse_color("#fff").is_err());
+    }
+
+    #[test]
+    fn example_config_parses() {
+        Config::parse(include_str!("../config.example.toml")).unwrap();
     }
 
     #[test]

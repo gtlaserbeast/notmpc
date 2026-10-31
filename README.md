@@ -123,8 +123,9 @@ arrives, the insert wins: the new songs play next.
 ## Configuration
 
 `~/.config/notmpc/config.toml`, all optional; see `config.example.toml`.
-The defaults reproduce an rmpc setup: rmpc keybindings (rmpc names and
-notation, so snippets carry over) and the gtlaserbeast theme.
+The default keys are rmpc's (rmpc names and notation, so snippets carry
+over). The default theme uses the terminal's palette, so it follows your
+terminal's colour scheme, and only symbols any monospace font has.
 
 ## Keys
 
