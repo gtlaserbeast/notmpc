@@ -27,11 +27,20 @@ pub struct Group {
     pub total: Duration,
     /// Tracks by more than one artist (show the artist per track).
     pub various: bool,
-    /// Id of the first song: identifies the group across refreshes.
-    pub key: u32,
+    /// Identifies the album across refreshes (folder, album, album
+    /// artist), so collapsing survives the queue changing around it: songs
+    /// deleted, added, or moved for playback-follows-the-highlight.
+    pub key: u64,
     /// Another group in the list has the same album and artist (show the
     /// folder to tell them apart).
     pub ambiguous: bool,
+}
+
+fn album_key(m: &Meta) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    (&m.dir, &m.album, &m.album_artist).hash(&mut h);
+    h.finish()
 }
 
 /// A song shown away from its MPD position: `id` belongs right after
@@ -46,7 +55,7 @@ pub struct Displaced {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum CursorKey {
     Song(u32),
-    Group(u32),
+    Group(u64),
 }
 
 #[derive(Default)]
@@ -63,11 +72,14 @@ pub struct Queue {
     pub group_of: Vec<usize>,
     /// Visible rows.
     pub rows: Vec<Row>,
-    pub collapsed: HashSet<u32>,
+    pub collapsed: HashSet<u64>,
     pub grouping: bool,
     /// Index into `rows`.
     pub sel: usize,
     pub scroll: usize,
+    /// What the cursor was on at the last draw: the view only jumps to the
+    /// cursor when it moved, so the wheel can scroll away from it.
+    drawn_cursor: Option<CursorKey>,
     /// Marked songs, by id.
     pub marked: HashSet<u32>,
 }
@@ -85,9 +97,11 @@ impl Queue {
         self.songs.iter().position(|s| s.id == Some(id))
     }
 
-    /// Replaces the songs, keeping the cursor on the same song or album.
+    /// Replaces the songs, keeping the cursor on the same song or album
+    /// and the view on the same top row.
     pub fn set_songs(&mut self, songs: Vec<Song>, displaced: Option<Displaced>) {
         let key = self.cursor_key();
+        let top = self.row_key(self.scroll);
         self.metas = songs.iter().map(Meta::of).collect();
         self.songs = songs;
         let ids: HashSet<u32> = self.songs.iter().filter_map(|s| s.id).collect();
@@ -110,9 +124,11 @@ impl Queue {
         }
 
         self.regroup();
-        self.collapsed.retain(|k| ids.contains(k));
+        let keys: HashSet<u64> = self.groups.iter().map(|g| g.key).collect();
+        self.collapsed.retain(|k| keys.contains(k));
         self.rebuild_rows();
         self.restore_cursor(key);
+        self.restore_top(top);
     }
 
     fn regroup(&mut self) {
@@ -136,7 +152,7 @@ impl Queue {
                     len: 1,
                     total: self.songs[q].duration,
                     various: false,
-                    key: self.songs[q].id.unwrap_or(u32::MAX),
+                    key: album_key(m),
                     ambiguous: false,
                 });
             }
@@ -178,26 +194,49 @@ impl Queue {
     }
 
     fn cursor_key(&self) -> Option<CursorKey> {
-        match self.rows.get(self.sel)? {
+        self.row_key(self.sel)
+    }
+
+    fn row_key(&self, r: usize) -> Option<CursorKey> {
+        match self.rows.get(r)? {
             Row::Song(q) => self.songs.get(*q)?.id.map(CursorKey::Song),
             Row::Group(g) => self.groups.get(*g).map(|g| CursorKey::Group(g.key)),
         }
     }
 
-    fn restore_cursor(&mut self, key: Option<CursorKey>) {
-        let found = key.and_then(|key| {
-            self.rows.iter().position(|r| match (r, key) {
-                (Row::Song(q), CursorKey::Song(id)) => self.songs[*q].id == Some(id),
-                (Row::Group(g), CursorKey::Group(k)) => self.groups[*g].key == k,
-                _ => false,
-            })
+    /// Whether the cursor is on something else than at the last call (the
+    /// view should bring it into sight).
+    pub fn cursor_moved(&mut self) -> bool {
+        let now = self.cursor_key();
+        let moved = now != self.drawn_cursor;
+        self.drawn_cursor = now;
+        moved
+    }
+
+    /// Scrolls so `top` (or the album now holding it) is the first row.
+    fn restore_top(&mut self, top: Option<CursorKey>) {
+        let Some(top) = top else { return };
+        if let Some(r) = self.find_row(top) {
+            self.scroll = r;
+        }
+    }
+
+    fn find_row(&self, key: CursorKey) -> Option<usize> {
+        let exact = self.rows.iter().position(|r| match (r, key) {
+            (Row::Song(q), CursorKey::Song(id)) => self.songs[*q].id == Some(id),
+            (Row::Group(g), CursorKey::Group(k)) => self.groups[*g].key == k,
+            _ => false,
         });
-        // A song that's now hidden in a collapsed group: land on the group.
-        let found = found.or_else(|| match key? {
+        exact.or_else(|| match key {
             CursorKey::Song(id) => self.pos_of_id(id).map(|q| self.row_of_song(q)),
             CursorKey::Group(_) => None,
-        });
-        if let Some(r) = found {
+        })
+    }
+
+    /// Puts the cursor back on `key`; a song now hidden in a collapsed
+    /// album lands on the album.
+    fn restore_cursor(&mut self, key: Option<CursorKey>) {
+        if let Some(r) = key.and_then(|k| self.find_row(k)) {
             self.sel = r;
         }
         self.sel = self.sel.min(self.rows.len().saturating_sub(1));
@@ -248,6 +287,11 @@ impl Queue {
         self.display_of[q].checked_sub(1).map(|d| self.order[d])
     }
 
+    /// Scrolls the view (not the cursor), e.g. for the mouse wheel.
+    pub fn scroll_by(&mut self, by: isize, visible: usize) {
+        self.scroll = self.scroll.saturating_add_signed(by).min(self.rows.len().saturating_sub(visible));
+    }
+
     pub fn move_sel(&mut self, by: isize) {
         let last = self.rows.len().saturating_sub(1);
         self.sel = self.sel.saturating_add_signed(by).min(last);
@@ -257,6 +301,7 @@ impl Queue {
     /// on its header.
     pub fn set_collapsed(&mut self, g: usize, collapse: bool) {
         let cursor = self.cursor_key();
+        let top = self.row_key(self.scroll);
         let key = self.groups[g].key;
         if collapse {
             self.collapsed.insert(key);
@@ -265,13 +310,16 @@ impl Queue {
         }
         self.rebuild_rows();
         self.restore_cursor(cursor);
+        self.restore_top(top);
     }
 
     pub fn set_all_collapsed(&mut self, collapse: bool) {
         let cursor = self.cursor_key();
+        let top = self.row_key(self.scroll);
         self.collapsed = if collapse { self.groups.iter().map(|g| g.key).collect() } else { HashSet::new() };
         self.rebuild_rows();
         self.restore_cursor(cursor);
+        self.restore_top(top);
     }
 }
 
@@ -316,6 +364,17 @@ mod tests {
         assert_eq!(q.selected_songs(), vec![2, 3]);
         q.set_collapsed(1, false);
         assert_eq!(q.rows.len(), 8);
+    }
+
+    #[test]
+    fn collapse_survives_queue_changes() {
+        let mut q = queue();
+        q.set_collapsed(1, true); // album B: songs 3, 4
+        // B's first song is deleted and a song is added in front
+        q.set_songs(vec![song(9, "Z"), song(1, "A"), song(2, "A"), song(4, "B"), song(5, "C")], None);
+        let b = q.groups.iter().position(|g| q.metas[q.order[g.start]].album == "B").unwrap();
+        assert!(q.collapsed.contains(&q.groups[b].key));
+        assert!(!q.rows.contains(&Row::Song(3)), "B's song stays hidden");
     }
 
     #[test]

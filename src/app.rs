@@ -981,7 +981,8 @@ impl<'nc> App<'nc> {
                 }
             }
             _ if (wheel_up || wheel_down) && self.tab == Tab::Search => {
-                self.search.results.move_sel(if wheel_up { -WHEEL_ROWS } else { WHEEL_ROWS });
+                let h = self.list_height;
+                self.search.results.scroll_by(if wheel_up { -WHEEL_ROWS } else { WHEEL_ROWS }, h);
             }
             Some((_, Target::SearchInput)) if m.button == 1 => self.search.editing = true,
             Some((_, t @ Target::Row(List::Search, row))) if m.button == 1 => {
@@ -1002,8 +1003,10 @@ impl<'nc> App<'nc> {
                 let collapse = !r.collapsed.contains(&r.groups[g].key);
                 r.set_collapsed(g, collapse);
             }
+            // The wheel scrolls the view; the cursor stays put.
             _ if (wheel_up || wheel_down) && self.tab == Tab::Queue => {
-                self.queue.move_sel(if wheel_up { -WHEEL_ROWS } else { WHEEL_ROWS });
+                let h = self.list_height;
+                self.queue.scroll_by(if wheel_up { -WHEEL_ROWS } else { WHEEL_ROWS }, h);
             }
             _ if m.button != 1 => {}
             Some((_, Target::Tab(t))) => self.set_tab(t)?,

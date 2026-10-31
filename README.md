@@ -185,7 +185,8 @@ the song to play next instead.
 Mouse: click a tab, a queue row (double-click plays; on an album header,
 plays the album), an album's ▾/▸ arrow (collapses / expands it), a mode word
 in the header (toggles it), or the progress bar (seeks there); the wheel
-scrolls the queue, or changes volume over the volume ramp.
+scrolls the view (the cursor stays put; the next key brings it back), or
+changes volume over the volume ramp.
 
 Untagged files show artist, album, year, and title guessed from the path,
 in italics.

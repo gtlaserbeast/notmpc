@@ -541,14 +541,17 @@ impl App<'_> {
         // one directly above it.
         let q = self.list_mut(kind);
         let target = q.sel;
-        let top = match target.checked_sub(1).map(|r| q.rows[r]) {
-            Some(Row::Group(_)) => target - 1,
-            _ => target,
-        };
-        if top < q.scroll {
-            q.scroll = top;
-        } else if target >= q.scroll + h {
-            q.scroll = target + 1 - h;
+        // Follow the cursor only when it moved; the wheel scrolls freely.
+        if q.cursor_moved() {
+            let top = match target.checked_sub(1).map(|r| q.rows[r]) {
+                Some(Row::Group(_)) => target - 1,
+                _ => target,
+            };
+            if top < q.scroll {
+                q.scroll = top;
+            } else if target >= q.scroll + h {
+                q.scroll = target + 1 - h;
+            }
         }
         q.scroll = q.scroll.min(q.rows.len().saturating_sub(h));
 
@@ -572,10 +575,11 @@ impl App<'_> {
             if let Some(f) = fill {
                 put(p, y, area.x, &" ".repeat(area.cols as usize), f);
             }
+            // later hits win: the arrow over its row
+            self.hit(y, area.x, area.cols, Target::Row(kind, row));
             if let Row::Group(g) = row {
                 self.hit(y, x, 2, Target::Caret(kind, g));
             }
-            self.hit(y, area.x, area.cols, Target::Row(kind, row));
             let hl = Highlight { primary, fill };
             match row {
                 Row::Group(g) => self.draw_group_header(p, y, x, w, (kind, g), hl, &t),
