@@ -606,7 +606,12 @@ impl<'nc> App<'nc> {
         let step = self.cfg.volume_step;
         let page = self.list_height.max(2) as isize;
         match action {
-            Quit => return Ok(false),
+            Quit => {
+                // Put the song follow-mode moved back, or the queue stays
+                // reordered for every other client.
+                let _ = self.restore();
+                return Ok(false);
+            }
             TogglePause => {
                 let cmd = if s.state == State::Play { "pause 1" } else { "play" };
                 self.mpd(cmd)?;
