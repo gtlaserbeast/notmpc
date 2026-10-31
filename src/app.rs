@@ -646,11 +646,15 @@ impl<'nc> App<'nc> {
             ToggleSingle => self.mpd(&format!("single {}", u8::from(!s.single)))?,
             ToggleConsume => self.mpd(&format!("consume {}", u8::from(!s.consume)))?,
             ToggleVisualizer => {
-                // Its reader can't be stopped mid-read, so keep one and only
-                // stop drawing; starting another would split the FIFO.
+                // One reader for the session (two would split the FIFO's
+                // data); it pauses while the visualizer is off.
                 self.viz_on = !self.viz_on;
-                if self.viz_on && self.viz.is_none() {
-                    self.viz = Some(Visualizer::new(self.cfg.visualizer_fifo.clone(), self.cfg.visualizer_delay()));
+                match &self.viz {
+                    Some(viz) => viz.set_reading(self.viz_on),
+                    None if self.viz_on => {
+                        self.viz = Some(Visualizer::new(self.cfg.visualizer_fifo.clone(), self.cfg.visualizer_delay()));
+                    }
+                    None => {}
                 }
                 let on = self.viz_on;
                 let saved = crate::config::State::update(|s| s.visualizer = Some(on));

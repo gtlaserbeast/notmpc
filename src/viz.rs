@@ -13,8 +13,9 @@ use std::collections::VecDeque;
 use std::fs::File;
 use std::io::Read;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use std::thread;
+use std::thread::{self, Thread};
 use std::time::{Duration, Instant};
 
 use rustfft::num_complex::Complex;
@@ -60,6 +61,10 @@ impl Shared {
 
 pub struct Visualizer {
     shared: Arc<Mutex<Shared>>,
+    /// Whether the reader should read; it closes the FIFO and sleeps
+    /// while this is off.
+    reading: Arc<AtomicBool>,
+    reader: Thread,
     delay: Duration,
     fft: Arc<dyn Fft<f32>>,
     window: Vec<f32>,
@@ -74,19 +79,32 @@ impl Visualizer {
     pub fn new(fifo: PathBuf, delay: Duration) -> Self {
         let shared =
             Arc::new(Mutex::new(Shared { samples: VecDeque::with_capacity(KEEP), written: 0, marks: VecDeque::new() }));
-        let s = Arc::clone(&shared);
-        thread::spawn(move || read_loop(&fifo, &s));
+        let reading = Arc::new(AtomicBool::new(true));
+        let (s, r) = (Arc::clone(&shared), Arc::clone(&reading));
+        let reader = thread::spawn(move || read_loop(&fifo, &s, &r)).thread().clone();
         let window = (0..FFT_SIZE)
             .map(|i| 0.5 - 0.5 * (2.0 * std::f32::consts::PI * i as f32 / (FFT_SIZE - 1) as f32).cos())
             .collect();
         Self {
             shared,
+            reading,
+            reader,
             delay,
             fft: FftPlanner::new().plan_fft_forward(FFT_SIZE),
             window,
             buf: vec![Complex::default(); FFT_SIZE],
             bars: Vec::new(),
             last_frame: Instant::now(),
+        }
+    }
+
+    /// Starts or stops reading the FIFO. Stopped, the reader holds no
+    /// file open and doesn't wake (MPD keeps a reader of its own, so its
+    /// output never blocks).
+    pub fn set_reading(&self, on: bool) {
+        self.reading.store(on, Ordering::Relaxed);
+        if on {
+            self.reader.unpark();
         }
     }
 
@@ -165,17 +183,21 @@ impl Visualizer {
     }
 }
 
-/// Reads s16le stereo frames forever, reopening when MPD closes the FIFO.
-fn read_loop(fifo: &PathBuf, shared: &Mutex<Shared>) {
+/// Reads s16le stereo frames forever, reopening when MPD closes the FIFO,
+/// and sleeping while `reading` is off.
+fn read_loop(fifo: &PathBuf, shared: &Mutex<Shared>, reading: &AtomicBool) {
     let mut raw = vec![0u8; 4096];
     loop {
+        while !reading.load(Ordering::Relaxed) {
+            thread::park();
+        }
         // Blocks until MPD opens its end.
         let Ok(mut f) = File::open(fifo) else {
             thread::sleep(Duration::from_secs(1));
             continue;
         };
         let mut carry: Vec<u8> = Vec::new();
-        loop {
+        while reading.load(Ordering::Relaxed) {
             let n = match f.read(&mut raw) {
                 Ok(0) | Err(_) => break,
                 Ok(n) => n,
