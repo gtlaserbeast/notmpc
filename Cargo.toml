@@ -6,6 +6,8 @@ edition = "2024"
 [dependencies]
 anyhow = "1.0.104"
 libc = "0.2.191"
+serde = { version = "1.0.229", features = ["derive"] }
+toml = "1.1.8"
 
 [build-dependencies]
 bindgen = { version = "0.73.2", features = ["experimental"] }

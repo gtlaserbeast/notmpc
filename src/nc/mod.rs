@@ -30,6 +30,7 @@ pub mod key {
     pub const DOWN: u32 = BASE + 4;
     pub const LEFT: u32 = BASE + 5;
     pub const DEL: u32 = BASE + 7;
+    pub const BACKSPACE: u32 = BASE + 8;
     pub const PGDOWN: u32 = BASE + 9;
     pub const PGUP: u32 = BASE + 10;
     pub const HOME: u32 = BASE + 11;
@@ -37,35 +38,57 @@ pub mod key {
     pub const ENTER: u32 = BASE + 121;
     pub const ESC: u32 = super::sys::NCKEY_ESC;
     pub const TAB: u32 = super::sys::NCKEY_TAB;
+    pub const SPACE: u32 = super::sys::NCKEY_SPACE;
+
+    /// Whether `id` is a printable character rather than a synthesized key.
+    pub fn is_printable(id: u32) -> bool {
+        (0x20..BASE).contains(&id) && id != 0x7f
+    }
+}
+
+/// A colour: truecolor, an index into the terminal's palette (so `yellow`
+/// matches the terminal theme), or the terminal default.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Color {
+    Default,
+    Rgb(u32),
+    Palette(u8),
 }
 
 pub use sys::{NCSTYLE_BOLD as BOLD, NCSTYLE_ITALIC as ITALIC};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Align {
-    Center,
-    Right,
-}
-
-impl Align {
-    fn raw(self) -> sys::ncalign_e {
-        match self {
-            Align::Center => sys::ncalign_e_NCALIGN_CENTER,
-            Align::Right => sys::ncalign_e_NCALIGN_RIGHT,
-        }
-    }
-}
-
-/// A key press (releases and repeats are filtered out by [`Nc::get`]).
-#[derive(Clone, Copy, Debug)]
+/// A key press (releases are filtered out by [`Nc::get`]).
+///
+/// Normalized so legacy and kitty-protocol terminals agree: Ctrl+letter is
+/// lowercase with `ctrl`, Shift+letter is the uppercase letter, and
+/// Enter/Backspace are always `key::ENTER`/`key::BACKSPACE`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Input {
     pub id: u32,
     pub ctrl: bool,
+    pub alt: bool,
+    pub shift: bool,
 }
 
 impl Input {
-    pub fn is_char(&self, c: char) -> bool {
-        !self.ctrl && self.id == c as u32
+    fn normalize(mut self) -> Self {
+        match self.id {
+            0x0a | 0x0d => self.id = key::ENTER,
+            0x08 | 0x7f => self.id = key::BACKSPACE,
+            _ => {}
+        }
+        if let Some(c) = char::from_u32(self.id).filter(char::is_ascii_alphabetic) {
+            if self.ctrl {
+                self.id = c.to_ascii_lowercase() as u32;
+            } else if self.shift {
+                self.id = c.to_ascii_uppercase() as u32;
+            }
+        }
+        // Shift is already part of a printable character.
+        if key::is_printable(self.id) && !self.ctrl {
+            self.shift = false;
+        }
+        self
     }
 }
 
@@ -173,10 +196,15 @@ impl Nc {
             u32::MAX => bail!("notcurses_get failed"),
             // Terminals speaking the kitty keyboard protocol report releases too.
             _ if ni.evtype == sys::ncintype_e_NCTYPE_RELEASE => Ok(None),
-            _ => Ok(Some(Input {
-                id,
-                ctrl: ni.modifiers & sys::NCKEY_MOD_CTRL != 0,
-            })),
+            _ => Ok(Some(
+                Input {
+                    id,
+                    ctrl: ni.modifiers & sys::NCKEY_MOD_CTRL != 0,
+                    alt: ni.modifiers & sys::NCKEY_MOD_ALT != 0,
+                    shift: ni.modifiers & sys::NCKEY_MOD_SHIFT != 0,
+                }
+                .normalize(),
+            )),
         }
     }
 }
@@ -208,24 +236,26 @@ impl Plane<'_> {
         unsafe { sys::ncplane_erase(self.raw) };
     }
 
-    pub fn set_fg_rgb(&mut self, rgb: u32) {
+    pub fn set_fg(&mut self, c: Color) {
         // SAFETY: raw is a live plane.
-        unsafe { sys::ncplane_set_fg_rgb(self.raw, rgb) };
+        unsafe {
+            match c {
+                Color::Default => sys::ncplane_set_fg_default(self.raw),
+                Color::Rgb(rgb) => _ = sys::ncplane_set_fg_rgb(self.raw, rgb),
+                Color::Palette(i) => _ = sys::ncplane_set_fg_palindex(self.raw, i.into()),
+            }
+        }
     }
 
-    pub fn set_bg_rgb(&mut self, rgb: u32) {
+    pub fn set_bg(&mut self, c: Color) {
         // SAFETY: raw is a live plane.
-        unsafe { sys::ncplane_set_bg_rgb(self.raw, rgb) };
-    }
-
-    pub fn set_fg_default(&mut self) {
-        // SAFETY: raw is a live plane.
-        unsafe { sys::ncplane_set_fg_default(self.raw) };
-    }
-
-    pub fn set_bg_default(&mut self) {
-        // SAFETY: raw is a live plane.
-        unsafe { sys::ncplane_set_bg_default(self.raw) };
+        unsafe {
+            match c {
+                Color::Default => sys::ncplane_set_bg_default(self.raw),
+                Color::Rgb(rgb) => _ = sys::ncplane_set_bg_rgb(self.raw, rgb),
+                Color::Palette(i) => _ = sys::ncplane_set_bg_palindex(self.raw, i.into()),
+            }
+        }
     }
 
     pub fn set_styles(&mut self, styles: u32) {
@@ -238,12 +268,6 @@ impl Plane<'_> {
         let Ok(s) = CString::new(s) else { return };
         // SAFETY: raw is a live plane; s is NUL-terminated and outlives the call.
         unsafe { sys::ncplane_putstr_yx(self.raw, y as i32, x as i32, s.as_ptr()) };
-    }
-
-    pub fn putstr_aligned(&mut self, y: u32, align: Align, s: &str) {
-        let Ok(s) = CString::new(s) else { return };
-        // SAFETY: as in putstr_yx.
-        unsafe { sys::ncplane_putstr_aligned(self.raw, y as i32, align.raw(), s.as_ptr()) };
     }
 }
 
@@ -302,6 +326,9 @@ impl Drop for Visual {
 
 /// Display width of `s` in cells, as notcurses will lay it out.
 pub fn width(s: &str) -> usize {
+    if s.bytes().all(|b| (0x20..0x7f).contains(&b)) {
+        return s.len();
+    }
     let Ok(c) = CString::new(s) else { return 0 };
     // SAFETY: c is NUL-terminated; the out-params may be null.
     let w = unsafe { sys::ncstrwidth(c.as_ptr(), ptr::null_mut(), ptr::null_mut()) };

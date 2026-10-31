@@ -94,6 +94,17 @@ impl Conn {
         Ok(self.request(cmd)?.0)
     }
 
+    /// Runs several commands in one round trip. MPD stops at the first that
+    /// fails.
+    pub fn command_list(&mut self, cmds: &[String]) -> Result<()> {
+        if cmds.is_empty() {
+            return Ok(());
+        }
+        let body = cmds.join("\n");
+        self.request(&format!("command_list_begin\n{body}\ncommand_list_end"))?;
+        Ok(())
+    }
+
     /// Fetches a song's cover: the embedded picture, else the `cover.*` file
     /// next to it. None when neither exists.
     pub fn picture(&mut self, uri: &str) -> Result<Option<Vec<u8>>> {
@@ -202,6 +213,12 @@ pub struct Status {
     pub volume: Option<u8>,
     /// Queue position of the current song.
     pub song_pos: Option<usize>,
+    /// kbps, while playing.
+    pub bitrate: Option<u32>,
+    /// `samplerate:bits:channels`, while playing.
+    pub audio: Option<String>,
+    /// A database update is running.
+    pub updating: bool,
     pub repeat: bool,
     pub random: bool,
     pub single: bool,
@@ -223,6 +240,9 @@ impl Status {
                 "elapsed" => s.elapsed = secs(v),
                 "duration" => s.duration = secs(v),
                 "song" => s.song_pos = v.parse().ok(),
+                "bitrate" => s.bitrate = v.parse().ok().filter(|&b| b > 0),
+                "audio" => s.audio = Some(v.clone()),
+                "updating_db" => s.updating = true,
                 "volume" => s.volume = v.parse::<i32>().ok().filter(|&v| v >= 0).map(|v| v as u8),
                 "repeat" => s.repeat = v == "1",
                 "random" => s.random = v == "1",
@@ -242,6 +262,10 @@ pub struct Song {
     pub title: Option<String>,
     pub artist: Option<String>,
     pub album: Option<String>,
+    pub album_artist: Option<String>,
+    pub date: Option<String>,
+    pub track: Option<u32>,
+    pub disc: Option<u32>,
     pub duration: Duration,
     /// Queue id, stable across reordering (unlike the position).
     pub id: Option<u32>,
@@ -266,18 +290,17 @@ impl Song {
                 "Title" => s.title = Some(v.clone()),
                 "Artist" => s.artist = Some(v.clone()),
                 "Album" => s.album = Some(v.clone()),
+                "AlbumArtist" => s.album_artist = Some(v.clone()),
+                "Date" => s.date = Some(v.clone()),
+                // "3" or "3/12"
+                "Track" => s.track = v.split('/').next().and_then(|n| n.trim().parse().ok()),
+                "Disc" => s.disc = v.split('/').next().and_then(|n| n.trim().parse().ok()),
                 "duration" => s.duration = secs(v),
                 "Id" => s.id = v.parse().ok(),
                 _ => {}
             }
         }
         songs
-    }
-
-    pub fn display_title(&self) -> &str {
-        self.title
-            .as_deref()
-            .unwrap_or_else(|| self.file.rsplit('/').next().unwrap_or(&self.file))
     }
 }
 

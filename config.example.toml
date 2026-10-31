@@ -1,0 +1,32 @@
+# notmpc config: copy to ~/.config/notmpc/config.toml.
+# Everything is optional. The defaults reproduce an rmpc setup with the
+# gtlaserbeast theme, so an empty file (or none) is fine.
+
+volume_step = 5
+seek_step = 5         # seconds
+art_width = 45        # % of the queue tab given to album art
+group_by_album = true # false = rmpc's flat Artist/Title/Album/Date table
+
+# Keys use rmpc notation: "p", "G", "<C-k>", "<S-Tab>", "<CR>", "<Space>".
+# Actions use rmpc names. Bindings here are added on top of the defaults;
+# "None" unbinds one. Lookup order on the queue tab: queue, navigation, global.
+[keys.global]
+# "p" = "TogglePause"
+# "s" = "None"
+
+[keys.navigation]
+# "<C-n>" = "Down"
+
+[keys.queue]
+# "x" = "Delete"
+
+# Colours: "#rrggbb", "default", or a terminal palette name (black, red,
+# green, yellow, blue, magenta, cyan, gray, dark_gray, light_*, white) or
+# index ("208"). Palette names follow the terminal's own theme, as in rmpc.
+# Each entry is a colour or a { fg, bg, bold, italic } table.
+[theme]
+# cursor = { fg = "black", bg = "#dd6f00", bold = true }
+# current = { fg = "#dd6f00", bold = true }
+# progress_thumb = "#a7ff04"
+# start cap, elapsed, thumb, remaining, end cap:
+# progress_symbols = ["", "─", "\U000f189c", " ", ""]

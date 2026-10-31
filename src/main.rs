@@ -1,7 +1,11 @@
 mod app;
 mod art;
+mod config;
+mod keys;
+mod meta;
 mod mpd;
 mod nc;
+mod ui;
 
 use std::sync::mpsc::{self, Receiver};
 use std::thread;
@@ -10,6 +14,7 @@ use std::time::Duration;
 use anyhow::{Result, bail};
 
 use app::App;
+use config::Config;
 use mpd::{Conn, Target};
 use nc::{Nc, key};
 
@@ -28,7 +33,7 @@ fn spawn_idle(target: Target) -> Result<Receiver<Event>> {
     let (tx, rx) = mpsc::channel();
     thread::spawn(move || {
         loop {
-            let ev = match conn.command("idle player mixer options playlist") {
+            let ev = match conn.command("idle player mixer options playlist update") {
                 Ok(pairs) => Event::Changed(pairs.into_iter().map(|(_, v)| v).collect()),
                 Err(e) => Event::Lost(e),
             };
@@ -42,13 +47,15 @@ fn spawn_idle(target: Target) -> Result<Receiver<Event>> {
 }
 
 fn main() -> Result<()> {
-    // Connect before taking over the terminal so errors print normally.
+    // Load config and connect before taking over the terminal so errors
+    // print normally.
+    let cfg = Config::load()?;
     let target = Target::from_env();
     let conn = Conn::connect(&target)?;
     let events = spawn_idle(target)?;
 
     let nc = Nc::new()?;
-    let mut app = App::new(&nc, conn)?;
+    let mut app = App::new(&nc, cfg, conn)?;
     loop {
         app.draw()?;
         nc.render()?;
