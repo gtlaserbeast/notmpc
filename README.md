@@ -107,7 +107,10 @@ the album header) scrolls through its full text, rests at its start for
 a quarter second, and goes round again. Moving the cursor starts it over.
 The next song after `next:` in the footer scrolls the same way when cut.
 Set the speed with `marquee_speed` (cells per second, default 8; 0 keeps
-the `…`). Nothing is redrawn while the text rests or when nothing is cut.
+the `…`), and how many times it goes round with `marquee_count`: a
+number, `"off"`, `"once"` or `"infinite"` (the default). After the last
+pass the text ends in `…` again, until what's cut changes (the cursor
+reaches another cut row, or there's a new next song). Nothing is redrawn while the text rests or when nothing is cut.
 
 ## Progress bar
 

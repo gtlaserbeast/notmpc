@@ -17,6 +17,7 @@ visualizer_fps = 20
 visualizer_style = "braille"  # two bars per column; "octants": the same, solid; "blocks": one, in eighth blocks
 visualizer_delay_ms = 150  # speakers' lag behind MPD; [ and ] tune it live (saved)
 marquee_speed = 8     # cells/s that too-long text scrolls on the highlighted row; 0 = cut with …
+marquee_count = "infinite"  # times it scrolls round before stopping at …: a number, "off", "once", "infinite"
 
 # Keys use rmpc notation: "p", "G", "<C-k>", "<S-Tab>", "<CR>", "<Space>".
 # Actions use rmpc names. Bindings here are added on top of the defaults;

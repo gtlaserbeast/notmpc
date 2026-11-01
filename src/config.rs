@@ -180,6 +180,34 @@ pub enum ProgressBar {
     Symbols,
 }
 
+/// How many times cut text scrolls round: a number, `"off"` (0),
+/// `"once"` (1) or `"infinite"` (`None`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
+#[serde(try_from = "CountOrWord")]
+pub struct MarqueeCount(pub Option<u32>);
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum CountOrWord {
+    Count(u32),
+    Word(String),
+}
+
+impl TryFrom<CountOrWord> for MarqueeCount {
+    type Error = String;
+    fn try_from(v: CountOrWord) -> Result<Self, String> {
+        match v {
+            CountOrWord::Count(n) => Ok(Self(Some(n))),
+            CountOrWord::Word(w) => match w.as_str() {
+                "off" => Ok(Self(Some(0))),
+                "once" => Ok(Self(Some(1))),
+                "infinite" => Ok(Self(None)),
+                _ => Err(format!("marquee_count: {w:?} isn't a number, \"off\", \"once\" or \"infinite\"")),
+            },
+        }
+    }
+}
+
 /// How album art is drawn.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -243,6 +271,8 @@ pub struct Config {
     /// How fast text too long for its column scrolls on the highlighted
     /// row, in cells per second; 0 truncates it with `…` instead.
     pub marquee_speed: u32,
+    /// How many times it scrolls round before stopping at `…`.
+    pub marquee_count: MarqueeCount,
     /// `[keys.*]` and `[theme]` as written; merged into `keys` and `theme`.
     #[serde(rename = "keys")]
     key_overrides: HashMap<String, HashMap<String, String>>,
@@ -274,6 +304,7 @@ impl Default for Config {
             visualizer_style: VisualizerStyle::Braille,
             visualizer_delay_ms: 150,
             marquee_speed: 8,
+            marquee_count: MarqueeCount(None),
             key_overrides: HashMap::new(),
             theme_overrides: HashMap::new(),
             keys: Keymap::defaults(),
@@ -513,6 +544,17 @@ mod tests {
         assert_eq!(viz(r#""cyan""#).unwrap(), vec![Color::Palette(6)], "one colour, not a palette");
         assert!(viz(r#"["default", "2"]"#).is_err());
         assert!(viz(r#""auroraa""#).is_err());
+    }
+
+    #[test]
+    fn marquee_count_takes_numbers_and_words() {
+        let count = |v: &str| Config::parse(&format!("marquee_count = {v}\n")).map(|c| c.marquee_count.0);
+        assert_eq!(count("3").unwrap(), Some(3));
+        assert_eq!(count("\"off\"").unwrap(), Some(0));
+        assert_eq!(count("\"once\"").unwrap(), Some(1));
+        assert_eq!(count("\"infinite\"").unwrap(), None);
+        assert!(count("\"twice\"").is_err());
+        assert_eq!(Config::default().marquee_count.0, None);
     }
 
     #[test]

@@ -5,7 +5,8 @@
 //! them changes (the cursor or highlight moved). Each pass rests at the
 //! start, then scrolls every field round once, all starting together; the
 //! longest sets the pace of the passes. Nothing moves while resting, so the
-//! main loop doesn't redraw then.
+//! main loop doesn't redraw then. After `passes` passes (if limited) the
+//! fields end in `…` again until the set changes.
 
 use std::cell::{Cell, RefCell};
 use std::hash::{DefaultHasher, Hash, Hasher};
@@ -26,6 +27,8 @@ const PAUSE: Duration = Duration::from_millis(250);
 pub struct Marquee {
     /// Cells per second; 0 turns scrolling off.
     speed: u32,
+    /// How many passes before stopping; `None`: no limit.
+    passes: Option<u32>,
     since: Cell<Instant>,
     /// The fields that scrolled in the last frame: (hash, cells per lap).
     shown: RefCell<Vec<(u64, usize)>>,
@@ -44,8 +47,9 @@ struct At {
 }
 
 impl Marquee {
-    pub fn new(speed: u32) -> Self {
-        Self { speed, since: Cell::new(Instant::now()), shown: RefCell::default(), seen: RefCell::default() }
+    pub fn new(speed: u32, passes: Option<u32>) -> Self {
+        let since = Cell::new(Instant::now());
+        Self { speed, passes, since, shown: RefCell::default(), seen: RefCell::default() }
     }
 
     /// Starts a frame.
@@ -68,7 +72,7 @@ impl Marquee {
     /// `cols` wide. `None` when they fit or scrolling is off.
     pub fn window(&self, segs: &Segs, cols: usize) -> Option<Segs> {
         let w: usize = segs.iter().map(|(s, _)| nc::width(s)).sum();
-        if self.speed == 0 || w <= cols || cols == 0 {
+        if self.speed == 0 || self.passes == Some(0) || w <= cols || cols == 0 {
             return None;
         }
         let mut h = DefaultHasher::new();
@@ -77,9 +81,13 @@ impl Marquee {
         self.seen.borrow_mut().push(field);
         // A field new this frame starts at the beginning (the clock restarts
         // when the frame ends); one done with its lap waits for the next pass.
+        let known = self.shown.borrow().contains(&field);
         let skip = match self.at() {
-            Some(At { cell: Some(c), .. }) if c < field.1 && self.shown.borrow().contains(&field) => c,
-            _ => 0,
+            Some(At { cell: Some(c), .. }) if c < field.1 && known => c,
+            Some(_) => 0,
+            // its passes are used up: cut with `…` like any other
+            None if known => return None,
+            None => 0,
         };
         Some(window(segs, skip, cols, nc::width))
     }
@@ -95,9 +103,11 @@ impl Marquee {
         self.at().map(|a| a.until)
     }
 
+    /// The clock, while anything is scrolling and has passes left.
     fn at(&self) -> Option<At> {
         let longest = self.shown.borrow().iter().map(|&(_, lap)| lap).max()?;
-        (self.speed > 0).then(|| at(self.since.get().elapsed(), longest, self.speed))
+        let a = (self.speed > 0).then(|| at(self.since.get().elapsed(), longest, self.speed))?;
+        self.passes.is_none_or(|n| a.pass < u64::from(n)).then_some(a)
     }
 }
 
@@ -214,8 +224,32 @@ mod tests {
 
     #[test]
     fn short_text_doesnt_scroll() {
-        let m = Marquee::new(8);
+        let m = Marquee::new(8, None);
         assert!(m.window(&one("short"), 10).is_none());
-        assert!(Marquee::new(0).window(&one("much too long"), 4).is_none());
+        assert!(Marquee::new(0, None).window(&one("much too long"), 4).is_none());
+        assert!(Marquee::new(8, Some(0)).window(&one("much too long"), 4).is_none());
+    }
+
+    #[test]
+    fn stops_after_its_passes() {
+        let text = one("much too long"); // 13 cells, a 15-cell lap
+        let frame = |m: &Marquee| {
+            m.begin();
+            let w = m.window(&text, 4);
+            m.end();
+            w
+        };
+        // 10 cells/s: a pass is 0.25 s rest + 1.5 s
+        let m = Marquee::new(10, Some(2));
+        assert!(frame(&m).is_some(), "scrolls at first");
+        m.since.set(Instant::now() - Duration::from_millis(2500)); // in the 2nd pass
+        assert!(frame(&m).is_some() && m.next_step().is_some());
+        m.since.set(Instant::now() - Duration::from_millis(3600)); // both done
+        assert!(frame(&m).is_none(), "cut with … again");
+        assert!(m.next_step().is_none() && m.step().is_none(), "and nothing to redraw for");
+        let forever = Marquee::new(10, None);
+        frame(&forever);
+        forever.since.set(Instant::now() - Duration::from_secs(60));
+        assert!(frame(&forever).is_some());
     }
 }

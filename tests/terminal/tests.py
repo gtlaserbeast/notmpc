@@ -240,3 +240,17 @@ def test_marquee_scrolls_the_next_song_in_the_footer(mpd, bin):
         t.pump(0.3)
     assert len(seen) > 2, f"it moves: {seen}"
     t.quit()
+
+
+def test_marquee_count_once_stops_at_the_ellipsis(mpd, bin):
+    mpd.reset(ALPHA, play=1)
+    t = Term(bin, mpd, cols=100, config='visualizer = false\nmarquee_speed = 10\nmarquee_count = "once"\n')
+    footer = lambda: t.lines()[-1]
+    # startup took 2.5 s: the one pass (0.25 s + ~1.7 s) is over
+    assert "…" in footer(), footer()
+    t.pump(1.0)
+    assert "…" in footer(), "and it stays"
+    mpd.mpc("-q", "next")  # a new next song: a new pass
+    t.pump(0.6)
+    assert "…" not in footer() and "Athree" in footer(), footer()
+    t.quit()

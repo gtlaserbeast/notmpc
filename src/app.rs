@@ -152,7 +152,7 @@ pub struct App<'nc> {
 impl<'nc> App<'nc> {
     pub fn new(nc: &'nc Nc, cfg: Config, conn: Conn) -> Result<Self> {
         let pixel_bar = if cfg.progress_bar == ProgressBar::Pixel { PixelBar::new(nc) } else { None };
-        let marquee = Marquee::new(cfg.marquee_speed);
+        let marquee = Marquee::new(cfg.marquee_speed, cfg.marquee_count.0);
         let art_style = cfg.art_style;
         let mut app = Self {
             nc,
