@@ -379,8 +379,6 @@ const DEFAULTS: &[(&str, &[(&str, &str)])] = &[
             ("<", "PreviousTrack"),
             ("f", "SeekForward"),
             ("b", "SeekBack"),
-            (".", "VolumeUp"),
-            (",", "VolumeDown"),
             ("<Tab>", "NextTab"),
             ("gt", "NextTab"),
             ("<S-Tab>", "PreviousTab"),

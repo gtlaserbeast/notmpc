@@ -202,7 +202,8 @@ terminal's colour scheme, and only symbols any monospace font has.
 rmpc 0.11's defaults (`rmpc config`), including multi-key sequences; Search
 is on 3 since the Artists/Albums/Playlists tabs don't exist, and keys for
 actions notmpc doesn't have (command mode, rating, playlists, ...) are left
-unbound. `/` jumps to Search from the other tabs. notmpc adds
+unbound, as are rmpc's volume keys (`.` / `,`; bind `VolumeUp` /
+`VolumeDown` yourself if you want them). `/` jumps to Search from the other tabs. notmpc adds
 `t` (play next), `F` (follow the highlight), `V` (visualizer on/off), `[` /
 `]` (visualizer delay), `H`/`L` (collapse/expand all albums), `h`/`l` on the
 queue (collapse/expand the album under the cursor), Home/End, and Del.
@@ -213,7 +214,6 @@ queue (collapse/expand the album under the cursor), Home/End, and Del.
 | p / s                        | play-pause / stop                          |
 | > / <                        | next / previous                            |
 | f / b                        | seek ±5s                                   |
-| . / ,                        | volume ±5                                  |
 | z x c v                      | repeat / random / consume / single         |
 | F                            | playback follows cursor (see below)        |
 | C-u / C-U                    | update / rescan (C-u is half-page in lists) |

@@ -2,7 +2,7 @@
 # Everything is optional, so an empty file (or none) is fine. The default
 # keys are rmpc's; the default theme uses the terminal's palette.
 
-volume_step = 5
+volume_step = 5       # for VolumeUp/VolumeDown, unbound by default
 seek_step = 5         # seconds
 art_width = 60        # max % of the queue tab for album art (sized to fit a square cover)
 group_by_album = true # false = rmpc's flat Artist/Title/Album/Date table
@@ -23,6 +23,8 @@ marquee_speed = 8     # cells/s that too-long text scrolls on the highlighted ro
 [keys.global]
 # "p" = "TogglePause"
 # "s" = "None"
+# "." = "VolumeUp"   # rmpc's volume keys, unbound by default
+# "," = "VolumeDown"
 
 [keys.navigation]
 # "<C-n>" = "Down"

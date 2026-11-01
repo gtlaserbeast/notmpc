@@ -78,7 +78,7 @@ impl Overlay {
             ("▾ / ▸", "fold / unfold an album"),
             ("progress bar", "seek"),
             ("Repeat … Follow", "toggle"),
-            ("wheel", "scroll; over the volume, change it"),
+            ("wheel", "scroll"),
         ] {
             lines.push(Line::pair(k, v));
         }
