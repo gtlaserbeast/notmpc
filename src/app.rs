@@ -68,7 +68,6 @@ pub enum Target {
     /// The progress bar's track, starting at `Hit::x`.
     Progress,
     Mode(Mode),
-    Volume,
     Row(List, Row),
     /// The fold arrow on an album header.
     Caret(List, usize),
@@ -949,14 +948,11 @@ impl<'nc> App<'nc> {
         };
         if wheel != 0 {
             let h = self.list_height;
-            match (hit.map(|h| h.target), self.tab) {
-                (Some(Target::Volume), _) => {
-                    self.act(if wheel < 0 { Action::VolumeUp } else { Action::VolumeDown })?;
-                }
-                (_, Tab::Directories) => self.browser.move_sel(wheel),
+            match self.tab {
+                Tab::Directories => self.browser.move_sel(wheel),
                 // Lists scroll the view; the cursor stays put.
-                (_, Tab::Search) => self.search.results.scroll_by(wheel, h),
-                (_, Tab::Queue) => self.queue.scroll_by(wheel, h),
+                Tab::Search => self.search.results.scroll_by(wheel, h),
+                Tab::Queue => self.queue.scroll_by(wheel, h),
             }
             return Ok(());
         }

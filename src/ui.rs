@@ -1,8 +1,8 @@
 //! Drawing. Layout, top to bottom:
 //!
 //! ```text
-//! [Playing]                  Kiska                    Volume: ▁▂▃▅▇ 100%
-//! 2:51 / 5:25 (731 kbps, FLAC 16/44.1)  Artist - Album   Repeat / Random …
+//! [Playing]                           Kiska
+//! 2:51 / 5:25 (731 kbps, FLAC 16/44.1)  Artist - Album   Repeat  Random …
 //! ⠶⠶⠶⠶⠶⠶⠶⠶⠶⠶⠶⠶⠶⠶⢾⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤
 //!                    Queue    Directories    Search
 //! [ album art ]   PACIFIC (2013) · Various ─────────── 8 tracks · 42:17
@@ -11,6 +11,8 @@
 //! ```
 //!
 //! The spectrum sits behind the first three rows, on a plane of its own.
+//! A cell shows one glyph, so the header text skips its spaces: the bars
+//! show through every gap, not just around the text.
 
 use std::time::Duration;
 
@@ -57,12 +59,43 @@ fn put(p: &mut Plane, y: u32, x: u32, s: &str, style: Style) -> u32 {
     x + nc::width(s) as u32
 }
 
+/// Like `put`, but over the spectrum: spaces in unstyled-background text
+/// aren't written, so the bars behind show through the gaps between words.
+fn put_through(p: &mut Plane, y: u32, x: u32, s: &str, style: Style) -> u32 {
+    if style.bg != Color::Default {
+        return put(p, y, x, s, style);
+    }
+    apply(p, style);
+    let mut x0 = x;
+    for (i, word) in s.split(' ').enumerate() {
+        if i > 0 {
+            x0 += 1;
+        }
+        if !word.is_empty() {
+            p.putstr_yx(y, x0, word);
+            x0 += nc::width(word) as u32;
+        }
+    }
+    x0
+}
+
 fn segs_width(segs: &Segs) -> u32 {
     segs.iter().map(|(s, _)| nc::width(s) as u32).sum()
 }
 
 /// Writes `segs` from x, truncating to `max` cells.
 fn put_segs(p: &mut Plane, y: u32, x: u32, max: u32, segs: &Segs) -> u32 {
+    put_segs_with(p, y, x, max, segs, put)
+}
+
+fn put_segs_with(
+    p: &mut Plane,
+    y: u32,
+    x: u32,
+    max: u32,
+    segs: &Segs,
+    put: fn(&mut Plane, u32, u32, &str, Style) -> u32,
+) -> u32 {
     let mut x0 = x;
     let mut left = max;
     for (s, st) in segs {
@@ -285,7 +318,7 @@ impl App<'_> {
         let t = &self.cfg.theme;
         let s = &self.status;
 
-        // row 0: [state]   title   volume
+        // row 0: [state]   title   (Updating…)
         let state = match s.state {
             _ if self.offline.is_some() => "[Offline]",
             State::Play => "[Playing]",
@@ -296,20 +329,7 @@ impl App<'_> {
 
         let mut right0: Segs = Vec::new();
         if s.updating {
-            right0.push(("Updating… ".into(), t.volume));
-        }
-        let vol_start = segs_width(&right0);
-        right0.push(("Volume: ".into(), t.volume));
-        match s.volume {
-            Some(v) => {
-                const RAMP: [&str; 5] = ["▁", "▂", "▃", "▅", "▇"];
-                let lit = (usize::from(v) * RAMP.len()).div_ceil(100);
-                for (i, bar) in RAMP.iter().enumerate() {
-                    right0.push((bar.to_string(), if i < lit { t.volume } else { t.dim }));
-                }
-                right0.push((format!(" {v}%"), t.volume));
-            }
-            None => right0.push(("n/a".into(), t.dim)),
+            right0.push(("Updating…".into(), t.volume));
         }
 
         let center0 = match &self.song {
@@ -317,9 +337,6 @@ impl App<'_> {
             None => vec![("No Song".into(), t.title)],
         };
         draw_three(p, 0, cols, &left0, &center0, &right0);
-        let rw = segs_width(&right0);
-        let x0 = cols.saturating_sub(rw);
-        self.hit(0, x0 + vol_start, rw - vol_start, Target::Volume);
 
         // row 1: time (bitrate, format)   artist - album   modes
         let mut info = format!("{} / {}", fmt_time(self.elapsed()), fmt_time(s.duration));
@@ -359,10 +376,11 @@ impl App<'_> {
             ("Single", s.single, Mode::Single),
             ("Follow", self.follow, Mode::Follow),
         ];
+        const GAP: &str = "  ";
         let mut right1: Segs = Vec::new();
         for (i, (name, on, _)) in modes.iter().enumerate() {
             if i > 0 {
-                right1.push((" / ".into(), t.mode_on));
+                right1.push((GAP.into(), t.mode_on));
             }
             right1.push((name.to_string(), if *on { t.mode_on } else { t.mode_off }));
         }
@@ -371,7 +389,7 @@ impl App<'_> {
         for (name, _, mode) in modes {
             let w = nc::width(name) as u32;
             self.hit(1, x, w, Target::Mode(mode));
-            x += w + 3;
+            x += w + GAP.len() as u32;
         }
     }
 
@@ -1193,12 +1211,12 @@ fn key_name(k: &crate::nc::Input) -> String {
 /// truncated so it never overlaps the sides.
 fn draw_three(p: &mut Plane, y: u32, cols: u32, left: &Segs, center: &Segs, right: &Segs) {
     let (lw, rw) = (segs_width(left), segs_width(right));
-    put_segs(p, y, 0, cols, left);
-    put_segs(p, y, cols.saturating_sub(rw), rw, right);
+    put_segs_with(p, y, 0, cols, left, put_through);
+    put_segs_with(p, y, cols.saturating_sub(rw), rw, right, put_through);
     let side = lw.max(rw) + 2;
     let avail = cols.saturating_sub(side * 2);
     let cw = segs_width(center).min(avail);
-    put_segs(p, y, (cols - cw) / 2, avail, center);
+    put_segs_with(p, y, (cols - cw) / 2, avail, center, put_through);
 }
 
 fn put_centered(p: &mut Plane, y: u32, x: u32, w: u32, s: &str, style: Style) {
