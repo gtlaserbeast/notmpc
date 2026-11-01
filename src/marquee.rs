@@ -19,9 +19,9 @@ use crate::nc;
 pub type Segs = Vec<(String, Style)>;
 
 /// Blank cells between the end of the text and its repeat.
-const GAP: usize = 4;
+const GAP: usize = 2;
 /// How long the fields rest at their start before each pass.
-const PAUSE: Duration = Duration::from_millis(1500);
+const PAUSE: Duration = Duration::from_millis(250);
 
 pub struct Marquee {
     /// Cells per second; 0 turns scrolling off.
@@ -181,8 +181,8 @@ mod tests {
     fn windows_wrap_round_through_the_gap() {
         let s = one("abcdefgh");
         assert_eq!(text(&window(&s, 0, 5, cells)), "abcde");
-        assert_eq!(text(&window(&s, 6, 5, cells)), "gh   ");
-        assert_eq!(text(&window(&s, 10, 5, cells)), "  abc");
+        assert_eq!(text(&window(&s, 6, 5, cells)), "gh  a");
+        assert_eq!(text(&window(&s, 8, 5, cells)), "  abc");
     }
 
     #[test]
@@ -202,14 +202,14 @@ mod tests {
 
     #[test]
     fn rests_then_scrolls_one_lap() {
-        // 10 cells/s: 100 ms a cell; a 14-cell pass takes 1.5 s + 1.4 s
+        // 10 cells/s: 100 ms a cell; a 14-cell pass takes 0.25 s + 1.4 s
         let at = |ms| at(Duration::from_millis(ms), 14, 10);
         assert_eq!(at(0).cell, None);
-        assert_eq!(at(1400).until, Duration::from_millis(100));
-        assert_eq!(at(1500).cell, Some(0));
-        assert_eq!(at(1650), At { pass: 0, cell: Some(1), until: Duration::from_millis(50) });
-        assert_eq!(at(1500 + 1350).cell, Some(13));
-        assert_eq!(at(2900), At { pass: 1, cell: None, until: PAUSE });
+        assert_eq!(at(150).until, Duration::from_millis(100));
+        assert_eq!(at(250).cell, Some(0));
+        assert_eq!(at(400), At { pass: 0, cell: Some(1), until: Duration::from_millis(50) });
+        assert_eq!(at(250 + 1350).cell, Some(13));
+        assert_eq!(at(1650), At { pass: 1, cell: None, until: PAUSE });
     }
 
     #[test]

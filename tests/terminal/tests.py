@@ -183,14 +183,14 @@ def test_marquee_scrolls_the_highlighted_row(mpd, bin):
     # "Artist A" is cut; only highlighted rows scroll instead.
     mpd.reset(ALPHA, play=1)
     cfg = "visualizer = false\ngroup_by_album = false\nart_width = 0\nmarquee_speed = {}\n"
-    t = Term(bin, mpd, cols=50, config=cfg.format(10))
+    t = Term(bin, mpd, cols=50, config=cfg.format(1))  # slow: a cell a second
     row = lambda title: next(l for l in t.lines()[4:] if title in l)  # below the header
     t.send("j")
-    t.send("k")  # the cursor moved: scrolling starts over, resting 1.5 s
+    t.send("k")  # the cursor moved: scrolling starts over (0.25 s rest, then cell 0 for 1 s)
     start = row("Aone")
     assert "Artis Aone" in start, start
     assert "Arti… Atwo" in row("Atwo"), "other rows keep the ellipsis"
-    t.pump(1.5)  # rest over, 10 cells/s
+    t.pump(1.0)  # a cell on
     assert "Artis" not in row("Aone") and "…" not in row("Aone"), row("Aone")
     t.send("j")  # the browse cursor joins: both start from the beginning
     assert "Artis Aone" in row("Aone") and "Artis Atwo" in row("Atwo"), t.text()
