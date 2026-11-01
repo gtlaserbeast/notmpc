@@ -304,7 +304,7 @@ impl Default for Config {
             visualizer_style: VisualizerStyle::Braille,
             visualizer_delay_ms: 150,
             marquee_speed: 8,
-            marquee_count: MarqueeCount(None),
+            marquee_count: MarqueeCount(Some(1)),
             key_overrides: HashMap::new(),
             theme_overrides: HashMap::new(),
             keys: Keymap::defaults(),
@@ -554,7 +554,7 @@ mod tests {
         assert_eq!(count("\"once\"").unwrap(), Some(1));
         assert_eq!(count("\"infinite\"").unwrap(), None);
         assert!(count("\"twice\"").is_err());
-        assert_eq!(Config::default().marquee_count.0, None);
+        assert_eq!(Config::default().marquee_count.0, Some(1));
     }
 
     #[test]

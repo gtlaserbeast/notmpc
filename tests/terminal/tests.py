@@ -231,7 +231,7 @@ def test_a_broken_config_starts_with_the_defaults(mpd, bin):
 
 def test_marquee_scrolls_the_next_song_in_the_footer(mpd, bin):
     mpd.reset(ALPHA, play=1)
-    t = Term(bin, mpd, cols=100, config="visualizer = false\nmarquee_speed = 10\n")
+    t = Term(bin, mpd, cols=100, config="visualizer = false\nmarquee_speed = 10\nmarquee_count = \"infinite\"\n")
     footer = lambda: t.lines()[-1]
     seen = set()
     for _ in range(6):
@@ -244,7 +244,7 @@ def test_marquee_scrolls_the_next_song_in_the_footer(mpd, bin):
 
 def test_marquee_count_once_stops_at_the_ellipsis(mpd, bin):
     mpd.reset(ALPHA, play=1)
-    t = Term(bin, mpd, cols=100, config='visualizer = false\nmarquee_speed = 10\nmarquee_count = "once"\n')
+    t = Term(bin, mpd, cols=100, config="visualizer = false\nmarquee_speed = 10\n")  # once: the default
     footer = lambda: t.lines()[-1]
     # startup took 2.5 s: the one pass (0.25 s + ~1.7 s) is over
     assert "…" in footer(), footer()
