@@ -191,6 +191,12 @@ pub enum VisualizerStyle {
     Blocks,
 }
 
+/// Whether `name` is a top-level config key: parsing it alone fails on its
+/// value, not as an unknown field.
+fn is_setting(name: &str) -> bool {
+    !matches!(toml::from_str::<Config>(&format!("{name} = []")), Err(e) if e.message().starts_with("unknown field"))
+}
+
 /// The config file's keys, one to one; anything left out keeps its default.
 #[derive(Clone, Debug, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -317,6 +323,11 @@ impl Config {
             cfg.keys.merge(&section, &entries)?;
         }
         for (name, entry) in std::mem::take(&mut cfg.theme_overrides) {
+            // TOML puts every key after a `[theme]` header in that table, so
+            // a setting added at the end of the file lands there.
+            if is_setting(&name) {
+                bail!("{name} is a setting, not a theme entry: move it above [theme] (it's under that header)");
+            }
             cfg.theme.set(&name, entry).with_context(|| format!("[theme] {name}"))?;
         }
         Ok(cfg)
@@ -479,6 +490,15 @@ mod tests {
         assert_eq!(viz(r#""cyan""#).unwrap(), vec![Color::Palette(6)], "one colour, not a palette");
         assert!(viz(r#"["default", "2"]"#).is_err());
         assert!(viz(r#""auroraa""#).is_err());
+    }
+
+    #[test]
+    fn a_setting_under_theme_says_where_it_goes() {
+        let err = Config::parse("[theme]\nvisualizer_style = \"blocks\"\n").unwrap_err();
+        assert!(err.to_string().contains("move it above [theme]"), "{err:#}");
+        let err = Config::parse("[theme]\nno_such_thing = \"1\"\n").unwrap_err();
+        assert!(format!("{err:#}").contains("unknown theme entry"), "{err:#}");
+        assert!(!is_setting("cursor") && is_setting("marquee_speed"));
     }
 
     #[test]
