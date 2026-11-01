@@ -2,7 +2,7 @@
 //!
 //! ```text
 //!                                     Kiska
-//!                                     Artist - Album
+//!                                     Artist  Album
 //! ⠶⠶⠶⠶⠶⠶⠶⠶⠶⠶⠶⠶⠶⠶⢾⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤
 //! 2:51 / 5:25 (FLAC 16/44.1)   Queue    Directories    Search
 //! [ album art ]   PACIFIC (2013) · Various ─────────── 8 tracks · 42:17
@@ -344,11 +344,11 @@ impl App<'_> {
         };
         draw_three(p, 0, cols, &left0, &center0, &right0);
 
-        // row 1: artist - album (the time and format are on the tab row)
+        // row 1: artist  album (the time and format are on the tab row)
         let center1 = match &self.song {
             Some((_, m)) => vec![
                 (m.artist.clone(), italic_if(t.artist, m.inferred)),
-                (" - ".into(), t.text),
+                ("  ".into(), t.text),
                 (m.album.clone(), italic_if(t.text, m.inferred)),
             ],
             None => Vec::new(),
@@ -991,7 +991,16 @@ impl App<'_> {
         } else if !q.marked.is_empty() {
             vec![(format!("{} selected", q.marked.len()), t.group_header)]
         } else if let Some(next) = next_song().filter(|_| self.status.state != State::Stop && max >= 16) {
-            vec![("next: ".to_owned(), t.dim), (next, t.text)]
+            // the label stays put; the song scrolls when it's cut
+            const LABEL: &str = "next: ";
+            let x = put(p, y, 1, LABEL, t.dim);
+            let room = max.saturating_sub(LABEL.len() as u32);
+            let song = vec![(next, t.text)];
+            match self.marquee.window(&song, room as usize) {
+                Some(window) => put_segs(p, y, x, room, &window),
+                None => put_segs(p, y, x, room, &song),
+            };
+            return;
         } else {
             return;
         };

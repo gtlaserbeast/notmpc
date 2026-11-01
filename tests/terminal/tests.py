@@ -227,3 +227,16 @@ def test_a_broken_config_starts_with_the_defaults(mpd, bin):
     t.send("j")
     assert not t.find("config.toml ignored"), "a key dismisses it"
     assert t.quit() == 0
+
+
+def test_marquee_scrolls_the_next_song_in_the_footer(mpd, bin):
+    mpd.reset(ALPHA, play=1)
+    t = Term(bin, mpd, cols=100, config="visualizer = false\nmarquee_speed = 10\n")
+    footer = lambda: t.lines()[-1]
+    seen = set()
+    for _ in range(6):
+        assert footer().startswith(" next: ") and "…" not in footer(), footer()
+        seen.add(footer().split("[")[0])
+        t.pump(0.3)
+    assert len(seen) > 2, f"it moves: {seen}"
+    t.quit()

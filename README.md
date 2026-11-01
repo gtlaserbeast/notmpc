@@ -105,6 +105,7 @@ Text too long for its column ends in `…`, except on the highlighted row
 and the browse cursor's row: there each cut field (title, artist, album,
 the album header) scrolls through its full text, rests at its start for
 a quarter second, and goes round again. Moving the cursor starts it over.
+The next song after `next:` in the footer scrolls the same way when cut.
 Set the speed with `marquee_speed` (cells per second, default 8; 0 keeps
 the `…`). Nothing is redrawn while the text rests or when nothing is cut.
 
