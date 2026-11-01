@@ -1016,6 +1016,13 @@ impl<'nc> App<'nc> {
                 } else if self.follow && self.can_follow() {
                     // A click moves the highlight too: that song plays next.
                     self.play_next()?;
+                    // That moves the playing song, renumbering the clicked
+                    // row's MPD position; re-key the first click to the row
+                    // the cursor (kept on the same song) is on now, or the
+                    // second click wouldn't match it.
+                    if let (Some((at, _)), Some(r)) = (self.last_click, self.queue.selected()) {
+                        self.last_click = Some((at, Target::Row(List::Queue, r)));
+                    }
                 }
             }
             _ => {}
