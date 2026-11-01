@@ -197,6 +197,11 @@ The default keys are rmpc's (rmpc names and notation, so snippets carry
 over). The default theme uses the terminal's palette, so it follows your
 terminal's colour scheme, and only symbols any monospace font has.
 
+A config file with a mistake in it doesn't stop notmpc: it starts with the
+defaults and says what's wrong in the footer until you press a key.
+Settings go above the first `[section]` header; TOML puts anything below
+one inside that section.
+
 ## Keys
 
 rmpc 0.11's defaults (`rmpc config`), including multi-key sequences; Search

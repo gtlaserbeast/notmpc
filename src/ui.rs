@@ -910,6 +910,17 @@ impl App<'_> {
 
     fn draw_footer(&self, p: &mut Plane, y: u32, cols: u32) {
         let t = &self.cfg.theme;
+        // a message that waits for a key gets the whole line, scrolling if
+        // it's still too long
+        if let Some((m, None)) = &self.message {
+            let segs = vec![(m.clone(), t.current)];
+            let room = cols.saturating_sub(2);
+            match self.marquee.window(&segs, room as usize) {
+                Some(window) => put_segs(p, y, 1, room, &window),
+                None => put_segs(p, y, 1, room, &segs),
+            };
+            return;
+        }
         let q = &self.queue;
         let n = q.songs.len();
         let total: Duration = q.songs.iter().map(|s| s.duration).sum();

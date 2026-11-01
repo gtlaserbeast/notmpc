@@ -215,3 +215,15 @@ def test_marquee_scrolls_the_highlighted_row(mpd, bin):
     t = Term(bin, mpd, cols=50, config=cfg.format(0))
     assert "Arti… Aone" in row("Aone"), "0 turns it off"
     t.quit()
+
+
+def test_a_broken_config_starts_with_the_defaults(mpd, bin):
+    mpd.reset(ALPHA)
+    t = Term(bin, mpd, config='marquee_speed = 0\n[theme]\nvisualizer_style = "blocks"\n')
+    assert t.find("Aone"), "it runs: " + t.text()
+    assert t.find("config.toml ignored") and t.find("move it above [theme]"), t.text()
+    t.pump(5)
+    assert t.find("config.toml ignored"), "it stays until a key"
+    t.send("j")
+    assert not t.find("config.toml ignored"), "a key dismisses it"
+    assert t.quit() == 0

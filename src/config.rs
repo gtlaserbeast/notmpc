@@ -292,8 +292,12 @@ impl Config {
     }
 
     /// Loads the config file if there is one, then the saved state.
-    pub fn load() -> Result<Self> {
-        let mut cfg = Self::load_config()?;
+    /// The config, or the defaults and why the file couldn't be used.
+    pub fn load() -> (Self, Option<anyhow::Error>) {
+        let (mut cfg, err) = match Self::load_config() {
+            Ok(cfg) => (cfg, None),
+            Err(e) => (Self::default(), Some(e)),
+        };
         let state = State::load();
         if let Some(ms) = state.visualizer_delay_ms {
             cfg.visualizer_delay_ms = ms;
@@ -301,7 +305,7 @@ impl Config {
         if let Some(on) = state.visualizer {
             cfg.visualizer = on;
         }
-        Ok(cfg)
+        (cfg, err)
     }
 
     fn load_config() -> Result<Self> {
@@ -326,7 +330,7 @@ impl Config {
             // TOML puts every key after a `[theme]` header in that table, so
             // a setting added at the end of the file lands there.
             if is_setting(&name) {
-                bail!("{name} is a setting, not a theme entry: move it above [theme] (it's under that header)");
+                bail!("{name} is a setting, not a theme entry: move it above [theme]");
             }
             cfg.theme.set(&name, entry).with_context(|| format!("[theme] {name}"))?;
         }

@@ -106,7 +106,8 @@ pub struct App<'nc> {
     pub(crate) fetched_at: Instant,
     pub(crate) tab: Tab,
     pub(crate) prompt: Option<Prompt>,
-    pub(crate) message: Option<(String, Instant)>,
+    /// A footer message and when it expires; `None`: at the next key.
+    pub(crate) message: Option<(String, Option<Instant>)>,
     /// Why MPD is unreachable, while it is.
     pub(crate) offline: Option<String>,
     /// Rows the queue list showed last frame, for paging.
@@ -234,7 +235,7 @@ impl<'nc> App<'nc> {
         let deadlines = [
             self.search.settles_at().filter(|_| self.tab == Tab::Search),
             self.browser.settles_at().filter(|_| self.tab == Tab::Directories),
-            self.message.as_ref().map(|(_, at)| *at + MESSAGE_TTL).filter(|_| self.current_message().is_some()),
+            self.message.as_ref().and_then(|(_, until)| *until).filter(|_| self.current_message().is_some()),
         ];
         for d in deadlines.into_iter().flatten() {
             wait = wait.min(d.saturating_duration_since(now) + MARGIN);
@@ -440,11 +441,17 @@ impl<'nc> App<'nc> {
     }
 
     pub fn say(&mut self, msg: impl Into<String>) {
-        self.message = Some((msg.into(), Instant::now()));
+        self.message = Some((msg.into(), Some(Instant::now() + MESSAGE_TTL)));
+    }
+
+    /// A message that stays until the next key, for one that mustn't be
+    /// missed.
+    pub fn say_until_key(&mut self, msg: impl Into<String>) {
+        self.message = Some((msg.into(), None));
     }
 
     pub fn current_message(&self) -> Option<&str> {
-        self.message.as_ref().filter(|(_, at)| at.elapsed() < MESSAGE_TTL).map(|(m, _)| m.as_str())
+        self.message.as_ref().filter(|(_, until)| until.is_none_or(|t| Instant::now() < t)).map(|(m, _)| m.as_str())
     }
 
     /// Runs an MPD command; a server-side refusal becomes a footer message
@@ -461,6 +468,9 @@ impl<'nc> App<'nc> {
 
     /// Returns false to quit.
     pub fn handle(&mut self, input: Input) -> Result<bool> {
+        if matches!(self.message, Some((_, None))) {
+            self.message = None;
+        }
         if self.overlay.is_some() {
             self.handle_overlay(input)?;
             return Ok(true);
