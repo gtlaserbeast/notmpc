@@ -150,6 +150,23 @@ def test_mouse_tabs_and_seek(mpd, bin):
     t.quit()
 
 
+def test_mode_toggles_in_the_footer(mpd, bin):
+    mpd.reset(ALPHA, play=1)
+    mpd.mpc("repeat", "off")
+    t = Term(bin, mpd)
+    x, y = t.find("Repeat")
+    assert y == t.rows - 1, f"modes sit on the footer row, found on row {y}"
+    assert "Repeat" not in t.text().splitlines()[1], "and no longer in the header"
+    t.click(x + 1, y)
+    assert wait_for(lambda: "repeat: on" in mpd.status()), "clicking Repeat turns it on"
+    x, y = t.find("Random")
+    t.click(x + 1, y)
+    assert wait_for(lambda: "random: on" in mpd.status()), "clicking Random turns it on"
+    mpd.mpc("repeat", "off")
+    mpd.mpc("random", "off")  # state leaks between tests
+    t.quit()
+
+
 def test_visualizer_off_closes_the_fifo(mpd, bin):
     mpd.reset(play=1)
     t = Term(bin, mpd, config="visualizer = true\n")

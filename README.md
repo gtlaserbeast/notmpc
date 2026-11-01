@@ -246,7 +246,7 @@ width (60 by default).
 
 Mouse: click a tab, a queue row (double-click plays; on an album header,
 plays the album), an album's ▾/▸ arrow (collapses / expands it), a mode word or symbol
-in the header (toggles it), or the progress bar (seeks there); the wheel
+at the right of the footer (toggles it), or the progress bar (seeks there); the wheel
 scrolls the view (the cursor stays put; the next key brings it back).
 
 Untagged files show artist, album, year, and title guessed from the path,

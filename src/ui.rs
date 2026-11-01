@@ -2,17 +2,19 @@
 //!
 //! ```text
 //! [Playing]                           Kiska
-//! 2:51 / 5:25 (731 kbps, FLAC 16/44.1)  Artist - Album   Repeat  Random …  (mode_symbols)
+//! 2:51 / 5:25 (731 kbps, FLAC 16/44.1)        Artist - Album
 //! ⠶⠶⠶⠶⠶⠶⠶⠶⠶⠶⠶⠶⠶⠶⢾⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤
 //!                    Queue    Directories    Search
 //! [ album art ]   PACIFIC (2013) · Various ─────────── 8 tracks · 42:17
 //!                 ▶ 7 Kiska                Tatsuro Yamashita        5:25
-//! message / prompt                       46 songs · 3:12:05 · 1:04:12 left
+//! message / prompt     46 songs · 3:12:05 · 1:04:12 left   Repeat  Random …
 //! ```
 //!
 //! The spectrum sits behind the first three rows, on a plane of its own.
 //! A cell shows one glyph, so the header text skips its spaces: the bars
-//! show through every gap, not just around the text.
+//! show through every gap, not just around the text. The mode toggles live
+//! in the footer: kitty draws Nerd Font icons two cells wide only while the
+//! next cell is blank, so over the spectrum they'd pulse with it.
 
 use std::time::Duration;
 
@@ -369,6 +371,15 @@ impl App<'_> {
             None => Vec::new(),
         };
 
+        draw_three(p, 1, cols, &left1, &center1, &Vec::new());
+    }
+
+    /// The mode toggles (`mode_symbols`, lit when on) at the right end of
+    /// row `y`, ending at column `end`; returns where they start.
+    fn draw_modes(&self, p: &mut Plane, y: u32, end: u32) -> u32 {
+        const GAP: u32 = 2;
+        let t = &self.cfg.theme;
+        let s = &self.status;
         let [repeat, random, consume, single, follow] = &t.mode_symbols;
         let modes = [
             (repeat, s.repeat, Mode::Repeat),
@@ -377,22 +388,16 @@ impl App<'_> {
             (single, s.single, Mode::Single),
             (follow, self.follow, Mode::Follow),
         ];
-        // Words want a wider gap than one-cell symbols.
-        let gap = if modes.iter().all(|(m, ..)| nc::width(m) <= 2) { " " } else { "  " };
-        let mut right1: Segs = Vec::new();
-        for (i, (name, on, _)) in modes.iter().enumerate() {
-            if i > 0 {
-                right1.push((gap.into(), t.mode_on));
-            }
-            right1.push((name.to_string(), if *on { t.mode_on } else { t.mode_off }));
-        }
-        draw_three(p, 1, cols, &left1, &center1, &right1);
-        let mut x = cols.saturating_sub(segs_width(&right1));
-        for (name, _, mode) in modes {
+        let width: u32 = modes.iter().map(|(m, ..)| nc::width(m) as u32).sum::<u32>() + GAP * 4;
+        let mut x = end.saturating_sub(width);
+        let start = x;
+        for (name, on, mode) in modes {
             let w = nc::width(name) as u32;
-            self.hit(1, x, w, Target::Mode(mode));
-            x += w + gap.len() as u32;
+            put(p, y, x, name, if on { t.mode_on } else { t.mode_off });
+            self.hit(y, x, w, Target::Mode(mode));
+            x += w + GAP;
         }
+        start
     }
 
     /// The pixel bar at row `y`; hidden under an overlay's backdrop.
@@ -915,9 +920,10 @@ impl App<'_> {
             let left = after + self.status.duration.saturating_sub(Duration::from_secs(self.elapsed().as_secs()));
             right += &format!(" · {} left", fmt_time(left));
         }
-        right.push(' ');
-        let rw = nc::width(&right) as u32;
-        put(p, y, cols.saturating_sub(rw), &right, t.dim);
+        let modes_x = self.draw_modes(p, y, cols.saturating_sub(1));
+        right += "   ";
+        let rw = cols - modes_x + nc::width(&right) as u32;
+        put(p, y, modes_x.saturating_sub(nc::width(&right) as u32), &right, t.dim);
 
         let max = cols.saturating_sub(rw + 2);
         let next_song = || {
