@@ -36,6 +36,23 @@ sends covers in large chunks; older servers work, just more slowly.
 Follows mpc: `MPD_HOST` (`[password@]host` or a socket path) and `MPD_PORT`.
 Without them it tries `$XDG_RUNTIME_DIR/mpd/socket`, then `localhost:6600`.
 
+**Playback follows the highlight** (foobar2000-style; `F` toggles). The
+queue has two cursors:
+
+- the *highlight* (the `cursor` colour) sits on the playing song and moves along
+  with playback;
+- the *browse cursor* (dotted `┆` rails, faint tint) is what j/k, gg/G, etc.
+  move. Enter, d, Space, J/K, h/l act on it. It never affects playback.
+
+`t` (PlayNext) moves the highlight to the browse cursor: that song plays
+next, without cutting the current one short, and playback carries on from
+there. Clicking a row does the same; double-click plays it now. `»` marks
+the next song, the footer names it. Under the hood the playing song is
+moved to just before the highlighted one (so MPD's transition stays
+gapless) and back when the next song starts; the display always shows the
+real order. Off in random or single mode. With following off, `t` moves
+the song to play next instead.
+
 ## Directories
 
 MPD's database as rmpc-style columns: parent, current folder, preview. The
@@ -134,13 +151,6 @@ give your own stops:
     # visualizer_colors = ["2", "4"]   # terminal palette slots: follows the
     #                                  # terminal's theme (read at startup)
 
-Cost while playing, at 173×45 in kitty with the defaults (braille, 20 fps):
-about 0.65% of a core for notmpc plus 0.9% for kitty. Every frame costs
-about the same however much changed (notcurses composes the whole screen,
-kitty repaints the window), so `visualizer_fps` is the knob. Frames that
-look the same as the last aren't sent, and nothing is when paused. With the
-visualizer off, notmpc and kitty together use about 0.13%.
-
 ## Command line
 
     notmpc update [DIR] [--wait]   # scan for new / changed files (DIR: one folder)
@@ -224,23 +234,6 @@ On the queue tab, `▸ collapse all` / `▾ expand all` at the right of the tab
 bar folds every album (keys `H` / `L`). The cover column is as wide as a
 square cover needs to fill the height, up to `art_width` percent of the
 width (60 by default).
-
-**Playback follows the highlight** (foobar2000-style; `F` toggles). The
-queue has two cursors:
-
-- the *highlight* (the `cursor` colour) sits on the playing song and moves along
-  with playback;
-- the *browse cursor* (dotted `┆` rails, faint tint) is what j/k, gg/G, etc.
-  move. Enter, d, Space, J/K, h/l act on it. It never affects playback.
-
-`t` (PlayNext) moves the highlight to the browse cursor: that song plays
-next, without cutting the current one short, and playback carries on from
-there. Clicking a row does the same; double-click plays it now. `»` marks
-the next song, the footer names it. Under the hood the playing song is
-moved to just before the highlighted one (so MPD's transition stays
-gapless) and back when the next song starts; the display always shows the
-real order. Off in random or single mode. With following off, `t` moves
-the song to play next instead.
 
 Mouse: click a tab, a queue row (double-click plays; on an album header,
 plays the album), an album's ▾/▸ arrow (collapses / expands it), a mode word
