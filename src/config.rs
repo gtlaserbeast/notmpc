@@ -40,7 +40,7 @@ impl Style {
 #[derive(Clone, Debug)]
 pub struct Theme {
     pub text: Style,
-    /// Playback state in the header (`[Playing]`).
+    /// Playback state in the footer (`[Playing]`).
     pub state: Style,
     pub title: Style,
     pub artist: Style,

@@ -1,13 +1,13 @@
 //! Drawing. Layout, top to bottom:
 //!
 //! ```text
-//! [Playing]                           Kiska
+//!                                     Kiska
 //! 2:51 / 5:25 (731 kbps, FLAC 16/44.1)        Artist - Album
 //! ⠶⠶⠶⠶⠶⠶⠶⠶⠶⠶⠶⠶⠶⠶⢾⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤
 //!                    Queue    Directories    Search
 //! [ album art ]   PACIFIC (2013) · Various ─────────── 8 tracks · 42:17
 //!                 ▶ 7 Kiska                Tatsuro Yamashita        5:25
-//! message / prompt     46 songs · 3:12:05 · 1:04:12 left   Repeat  Random …
+//! message / prompt   [Playing]  46 songs · 3:12:05 · 1:04:12 left   Repeat …
 //! ```
 //!
 //! The spectrum sits behind the first three rows, on a plane of its own.
@@ -330,14 +330,8 @@ impl App<'_> {
         let t = &self.cfg.theme;
         let s = &self.status;
 
-        // row 0: [state]   title   (Updating…)
-        let state = match s.state {
-            _ if self.offline.is_some() => "[Offline]",
-            State::Play => "[Playing]",
-            State::Pause => "[Paused]",
-            State::Stop => "[Stopped]",
-        };
-        let left0 = vec![(state.to_owned(), t.state)];
+        // row 0: title   (Updating…)
+        let left0: Segs = Vec::new();
 
         let mut right0: Segs = Vec::new();
         if s.updating {
@@ -934,17 +928,41 @@ impl App<'_> {
         let q = &self.queue;
         let n = q.songs.len();
         let total: Duration = q.songs.iter().map(|s| s.duration).sum();
-        let mut right = format!("{n} song{} · {}", if n == 1 { "" } else { "s" }, fmt_time(total));
+        // [state]  N songs · total · left, ending 3 cells before the modes;
+        // when narrow, the last piece goes first, the state last of all
+        let mut parts = vec![format!("{n} song{}", if n == 1 { "" } else { "s" }), fmt_time(total)];
         if let Some(pos) = self.current_pos().filter(|_| self.status.state != State::Stop) {
             let after: Duration = q.order[q.display_of[pos] + 1..].iter().map(|&i| q.songs[i].duration).sum();
             // whole seconds, so it ticks with the header clock
             let left = after + self.status.duration.saturating_sub(Duration::from_secs(self.elapsed().as_secs()));
-            right += &format!(" · {} left", fmt_time(left));
+            parts.push(format!("{} left", fmt_time(left)));
         }
         let modes_x = self.draw_modes(p, y, cols.saturating_sub(1));
-        right += "   ";
-        let rw = cols - modes_x + nc::width(&right) as u32;
-        put(p, y, modes_x.saturating_sub(nc::width(&right) as u32), &right, t.dim);
+        let mut state = Some(match self.status.state {
+            _ if self.offline.is_some() => "[Offline]",
+            State::Play => "[Playing]",
+            State::Pause => "[Paused]",
+            State::Stop => "[Stopped]",
+        });
+        let (text, state) = loop {
+            let text = if parts.is_empty() { String::new() } else { parts.join(" · ") + "   " };
+            let state_w = state.map_or(0, |s| nc::width(s) + if parts.is_empty() { 3 } else { 2 });
+            if ((state_w + nc::width(&text)) as u32) < modes_x || state.is_none() {
+                break (text, state);
+            }
+            if parts.pop().is_none() {
+                state = None;
+            }
+        };
+        let tx = modes_x.saturating_sub(nc::width(&text) as u32);
+        put(p, y, tx, &text, t.dim);
+        let mut rx = tx;
+        if let Some(st) = state {
+            let gap = if text.is_empty() { 3 } else { 2 };
+            rx = tx.saturating_sub(nc::width(st) as u32 + gap);
+            put(p, y, rx, st, t.state);
+        }
+        let rw = cols - rx;
 
         let max = cols.saturating_sub(rw + 2);
         let next_song = || {
@@ -963,7 +981,7 @@ impl App<'_> {
             vec![(m.to_owned(), t.text)]
         } else if !q.marked.is_empty() {
             vec![(format!("{} selected", q.marked.len()), t.group_header)]
-        } else if let Some(next) = next_song().filter(|_| self.status.state != State::Stop) {
+        } else if let Some(next) = next_song().filter(|_| self.status.state != State::Stop && max >= 16) {
             vec![("next: ".to_owned(), t.dim), (next, t.text)]
         } else {
             return;
