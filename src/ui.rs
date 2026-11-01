@@ -2,7 +2,7 @@
 //!
 //! ```text
 //! [Playing]                           Kiska
-//! 2:51 / 5:25 (731 kbps, FLAC 16/44.1)  Artist - Album   Repeat  Random …
+//! 2:51 / 5:25 (731 kbps, FLAC 16/44.1)  Artist - Album   Repeat  Random …  (mode_symbols)
 //! ⠶⠶⠶⠶⠶⠶⠶⠶⠶⠶⠶⠶⠶⠶⢾⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤
 //!                    Queue    Directories    Search
 //! [ album art ]   PACIFIC (2013) · Various ─────────── 8 tracks · 42:17
@@ -369,18 +369,20 @@ impl App<'_> {
             None => Vec::new(),
         };
 
+        let [repeat, random, consume, single, follow] = &t.mode_symbols;
         let modes = [
-            ("Repeat", s.repeat, Mode::Repeat),
-            ("Random", s.random, Mode::Random),
-            ("Consume", s.consume, Mode::Consume),
-            ("Single", s.single, Mode::Single),
-            ("Follow", self.follow, Mode::Follow),
+            (repeat, s.repeat, Mode::Repeat),
+            (random, s.random, Mode::Random),
+            (consume, s.consume, Mode::Consume),
+            (single, s.single, Mode::Single),
+            (follow, self.follow, Mode::Follow),
         ];
-        const GAP: &str = "  ";
+        // Words want a wider gap than one-cell symbols.
+        let gap = if modes.iter().all(|(m, ..)| nc::width(m) <= 2) { " " } else { "  " };
         let mut right1: Segs = Vec::new();
         for (i, (name, on, _)) in modes.iter().enumerate() {
             if i > 0 {
-                right1.push((GAP.into(), t.mode_on));
+                right1.push((gap.into(), t.mode_on));
             }
             right1.push((name.to_string(), if *on { t.mode_on } else { t.mode_off }));
         }
@@ -389,7 +391,7 @@ impl App<'_> {
         for (name, _, mode) in modes {
             let w = nc::width(name) as u32;
             self.hit(1, x, w, Target::Mode(mode));
-            x += w + GAP.len() as u32;
+            x += w + gap.len() as u32;
         }
     }
 

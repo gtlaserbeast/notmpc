@@ -65,6 +65,8 @@ pub struct Theme {
     pub progress_track: Style,
     /// start cap, elapsed, thumb, remaining, end cap
     pub progress_symbols: [String; 5],
+    /// The header's mode toggles: repeat, random, consume, single, follow.
+    pub mode_symbols: [String; 5],
     /// Field names in the Directories preview.
     pub label: Style,
     /// Album artist on queue album headers.
@@ -114,6 +116,7 @@ impl Default for Theme {
             progress_thumb: Style::fg(CYAN),
             progress_track: Style::fg(DARK_GRAY),
             progress_symbols: ["", "━", "●", "─", ""].map(String::from),
+            mode_symbols: ["Repeat", "Random", "Consume", "Single", "Follow"].map(String::from),
             label: Style::fg(YELLOW),
             album_artist: Style::fg(CYAN),
             panel: Style::fg(Color::Default).on(DARK_SHADE),
@@ -268,7 +271,7 @@ enum ThemeEntry {
         #[serde(default)]
         italic: bool,
     },
-    /// `progress_symbols = [...]`
+    /// `progress_symbols = [...]`, `mode_symbols = [...]`
     Symbols([String; 5]),
     /// `visualizer_colors = ["#..", ...]`
     List(Vec<String>),
@@ -357,9 +360,9 @@ impl Theme {
             self.visualizer_colors = colors;
             return Ok(());
         }
-        if name == "progress_symbols" {
+        if name == "progress_symbols" || name == "mode_symbols" {
             let ThemeEntry::Symbols(s) = entry else { bail!("expected a list of 5 strings") };
-            self.progress_symbols = s;
+            *if name == "mode_symbols" { &mut self.mode_symbols } else { &mut self.progress_symbols } = s;
             return Ok(());
         }
         let slot = match name {
@@ -495,6 +498,7 @@ mod tests {
             [theme]
             cursor = { fg = "black", bg = "#112233", bold = true }
             progress_symbols = ["[", "=", ">", "-", "]"]
+            mode_symbols = ["R", "Z", "C", "S", "F"]
             "##,
         )
         .unwrap();
@@ -503,6 +507,7 @@ mod tests {
         assert_eq!(cfg.visualizer_rows, 3, "clamped");
         assert_eq!(cfg.theme.cursor.bg, Color::Rgb(0x112233));
         assert_eq!(cfg.theme.progress_symbols[0], "[");
+        assert_eq!(cfg.theme.mode_symbols[4], "F");
         assert!(cfg.keys.global.len() > 20, "skipped fields come from Config::default");
         assert!(Config::parse("no_such_key = 1").is_err());
     }

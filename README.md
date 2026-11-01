@@ -245,7 +245,7 @@ square cover needs to fill the height, up to `art_width` percent of the
 width (60 by default).
 
 Mouse: click a tab, a queue row (double-click plays; on an album header,
-plays the album), an album's ▾/▸ arrow (collapses / expands it), a mode word
+plays the album), an album's ▾/▸ arrow (collapses / expands it), a mode word or symbol
 in the header (toggles it), or the progress bar (seeks there); the wheel
 scrolls the view (the cursor stays put; the next key brings it back).
 

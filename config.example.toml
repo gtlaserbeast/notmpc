@@ -48,9 +48,12 @@ marquee_speed = 8     # cells/s that too-long text scrolls on the highlighted ro
 # showing through); Nerd Font glyphs work too, e.g. "\ue0b7" / "\ue0b5" caps:
 # progress_symbols = ["", "━", "●", "─", ""]
 # dir_symbol = "▸"
+# Header modes: repeat, random, consume, single, follow (lit = on, dim = off).
+# With a Nerd Font, icons instead of words:
+# mode_symbols = ["\U000f0456", "\U000f049d", "\U000f0413", "\U000f0458", "\U000f01a4"]
 # song_symbol = "♪"
 #
 # Every entry: text state title artist volume mode_on mode_off tab_active
 # tab_inactive cursor browse browse_rail current album date group_header dim
-# progress_elapsed progress_thumb progress_track progress_symbols label
+# progress_elapsed progress_thumb progress_track progress_symbols mode_symbols label
 # album_artist panel panel_border visualizer_colors dir_symbol song_symbol
