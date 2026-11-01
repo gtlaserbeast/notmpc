@@ -252,6 +252,13 @@ bar folds every album (keys `H` / `L`). The cover column is as wide as a
 square cover needs to fill the height, up to `art_width` percent of the
 width (60 by default).
 
+`art_style` picks how covers are drawn: `"pixels"` (the default: real
+pixels in kitty and sixel terminals, character cells elsewhere),
+`"braille"` (dots that follow the cover's light and dark, in its colours;
+sharpened and dithered, so it reads as a drawing of the cover, best on a
+dark background), or `"blocks"` (half blocks: two coloured pixels a cell).
+The text styles need no image support from the terminal.
+
 Mouse: click a tab, a queue row (double-click plays; on an album header,
 plays the album), an album's ▾/▸ arrow (collapses / expands it), a mode word or symbol
 at the right of the footer (toggles it), or the progress bar (seeks there); the wheel
@@ -284,6 +291,7 @@ in italics.
 - `src/art.rs` fetches covers (`readpicture`, then `albumart`), decodes
   them with notcurses' ffmpeg backend, and blits them onto their own planes:
   pixel graphics when the terminal supports them, half-blocks otherwise.
+- `src/textart.rs`: the braille cover style (sampling, sharpening, dithering).
 - `src/viz.rs`: the spectrum analyser (FIFO reader thread, FFT, bands).
 - `src/pixelbar.rs`: the optional pixel progress bar.
 - `src/marquee.rs`: scrolling for cut text on highlighted rows.

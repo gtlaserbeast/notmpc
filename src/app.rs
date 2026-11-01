@@ -153,6 +153,7 @@ impl<'nc> App<'nc> {
     pub fn new(nc: &'nc Nc, cfg: Config, conn: Conn) -> Result<Self> {
         let pixel_bar = if cfg.progress_bar == ProgressBar::Pixel { PixelBar::new(nc) } else { None };
         let marquee = Marquee::new(cfg.marquee_speed);
+        let art_style = cfg.art_style;
         let mut app = Self {
             nc,
             marquee,
@@ -174,9 +175,9 @@ impl<'nc> App<'nc> {
             primary: None,
             displaced: None,
             inserted: Vec::new(),
-            art: Art::new(nc, crate::art::MAX_PX),
+            art: Art::new(nc, crate::art::MAX_PX, art_style),
             browser: Browser::default(),
-            preview_art: Art::new(nc, crate::art::PREVIEW_MAX_PX),
+            preview_art: Art::new(nc, crate::art::PREVIEW_MAX_PX, art_style),
             search: Search::new(),
             overlay: None,
             overlay_plane: None,

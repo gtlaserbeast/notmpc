@@ -287,14 +287,19 @@ impl Nc {
         unsafe { sys::notcurses_check_pixel_support(self.raw) != sys::ncpixelimpl_e_NCPIXEL_NONE }
     }
 
-    /// Scales `v` to fit `parent`, centred, in a new child plane.
-    pub fn blit_into<'a>(&'a self, v: &Visual, parent: &Plane<'a>, pixel: bool) -> Result<OwnedPlane<'a>> {
+    /// Scales `v` to fit `parent`, centred, in a new child plane: in
+    /// pixels, or `half_blocks`, or notcurses' best character cells.
+    pub fn blit_into<'a>(&'a self, v: &Visual, parent: &Plane<'a>, blitter: Blitter) -> Result<OwnedPlane<'a>> {
         let opts = sys::ncvisual_options {
             n: parent.raw,
             scaling: sys::ncscale_e_NCSCALE_SCALE,
             y: sys::ncalign_e_NCALIGN_CENTER as i32,
             x: sys::ncalign_e_NCALIGN_CENTER as i32,
-            blitter: if pixel { sys::ncblitter_e_NCBLIT_PIXEL } else { sys::ncblitter_e_NCBLIT_DEFAULT },
+            blitter: match blitter {
+                Blitter::Pixel => sys::ncblitter_e_NCBLIT_PIXEL,
+                Blitter::HalfBlocks => sys::ncblitter_e_NCBLIT_2x1,
+                Blitter::Cells => sys::ncblitter_e_NCBLIT_DEFAULT,
+            },
             flags: (sys::NCVISUAL_OPTION_CHILDPLANE | sys::NCVISUAL_OPTION_HORALIGNED | sys::NCVISUAL_OPTION_VERALIGNED)
                 as u64,
             ..Default::default()
@@ -460,6 +465,16 @@ impl Plane<'_> {
     }
 }
 
+/// How `Nc::blit_into` draws an image.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Blitter {
+    Pixel,
+    /// ▀ and ▄: two pixels per cell, top and bottom.
+    HalfBlocks,
+    /// Whatever character cells the terminal draws best.
+    Cells,
+}
+
 /// A plane notmpc created, destroyed on drop.
 ///
 /// notcurses 3.0.8 has no `ncplane_family_destroy`, so drop children before
@@ -526,6 +541,24 @@ impl Visual {
         ok.then_some((g.pixy, g.pixx))
     }
 
+    /// The pixels, for drawing the image ourselves.
+    pub fn image(&self) -> Option<crate::textart::Image> {
+        let (h, w) = self.size()?;
+        let mut px = Vec::with_capacity((h * w) as usize);
+        for y in 0..h {
+            for x in 0..w {
+                let mut p = 0u32;
+                // SAFETY: raw is live and (y, x) is inside the image.
+                if unsafe { sys::ncvisual_at_yx(self.raw, y, x, &mut p) } != 0 {
+                    return None;
+                }
+                // notcurses keeps pixels as RGBA bytes
+                px.push(p.to_le_bytes());
+            }
+        }
+        Some(crate::textart::Image { w, h, px })
+    }
+
     /// Shrinks the image so neither side exceeds `max` pixels (keeping its
     /// shape). Covers are often 1400px+; this keeps memory down.
     pub fn downscale(&mut self, max: u32) {
@@ -582,7 +615,15 @@ pub fn fit(s: &str, cols: usize) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{Input, xterm_rgb};
+    use super::{Input, Visual, xterm_rgb};
+
+    #[test]
+    fn pixels_read_back_as_rgba() {
+        let v = Visual::from_rgba(&[10, 20, 30, 255, 200, 100, 50, 0], 1, 2).unwrap();
+        let img = v.image().unwrap();
+        assert_eq!((img.w, img.h), (2, 1));
+        assert_eq!(img.px, [[10, 20, 30, 255], [200, 100, 50, 0]]);
+    }
 
     #[test]
     fn shift_makes_the_symbol() {

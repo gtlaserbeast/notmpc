@@ -16,6 +16,7 @@ mod overlay;
 mod pixelbar;
 mod queue;
 mod search;
+mod textart;
 mod ui;
 mod viz;
 

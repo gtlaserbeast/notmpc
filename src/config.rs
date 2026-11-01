@@ -180,6 +180,19 @@ pub enum ProgressBar {
     Symbols,
 }
 
+/// How album art is drawn.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ArtStyle {
+    /// Real pixels where the terminal has them (kitty, sixel), character
+    /// cells elsewhere.
+    Pixels,
+    /// Braille dots following the cover's light and dark, in its colours.
+    Braille,
+    /// Half blocks: two pixels a cell, in full colour.
+    Blocks,
+}
+
 /// How the spectrum's bars are drawn.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -210,6 +223,7 @@ pub struct Config {
     /// The most of the queue tab's width album art may take, in percent;
     /// it takes what a square cover needs to fill the height.
     pub art_width: u32,
+    pub art_style: ArtStyle,
     pub group_by_album: bool,
     /// Playback follows the queue cursor (toggle with ToggleFollow).
     pub follow_cursor: bool,
@@ -246,6 +260,7 @@ impl Default for Config {
             volume_step: 5,
             seek_step: 5,
             art_width: 60,
+            art_style: ArtStyle::Pixels,
             group_by_album: true,
             follow_cursor: true,
             status_update_interval_ms: 1000,
