@@ -125,7 +125,8 @@ class Term:
     """notmpc in a pty. `kitty`: claim to be kitty and speak its keyboard
     protocol (no rendered screen then; check raw output instead)."""
 
-    def __init__(self, binary, mpd, rows=30, cols=100, kitty=False, config="visualizer = false\n", args=()):
+    def __init__(self, binary, mpd, rows=30, cols=100, kitty=False, config="visualizer = false\nmarquee_speed = 0\n",
+                 args=()):
         self.mpd, self.rows, self.cols, self.kitty = mpd, rows, cols, kitty
         cfg = Path(mpd.env["XDG_CONFIG_HOME"]) / "notmpc"
         cfg.mkdir(parents=True, exist_ok=True)

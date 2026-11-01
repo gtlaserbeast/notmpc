@@ -213,6 +213,9 @@ pub struct Config {
     /// How far the speakers lag MPD's FIFO (PipeWire buffering). Tuned
     /// live with [ and ], which saves it to the state file.
     pub visualizer_delay_ms: u64,
+    /// How fast text too long for its column scrolls on the highlighted
+    /// row, in cells per second; 0 truncates it with `…` instead.
+    pub marquee_speed: u32,
     /// `[keys.*]` and `[theme]` as written; merged into `keys` and `theme`.
     #[serde(rename = "keys")]
     key_overrides: HashMap<String, HashMap<String, String>>,
@@ -242,6 +245,7 @@ impl Default for Config {
             visualizer_fps: 20,
             visualizer_style: VisualizerStyle::Braille,
             visualizer_delay_ms: 150,
+            marquee_speed: 8,
             key_overrides: HashMap::new(),
             theme_overrides: HashMap::new(),
             keys: Keymap::defaults(),
@@ -305,6 +309,7 @@ impl Config {
         cfg.status_update_interval_ms = cfg.status_update_interval_ms.max(100);
         cfg.visualizer_rows = cfg.visualizer_rows.clamp(1, 3);
         cfg.visualizer_fps = cfg.visualizer_fps.clamp(5, 60);
+        cfg.marquee_speed = cfg.marquee_speed.min(60);
         for (section, entries) in std::mem::take(&mut cfg.key_overrides) {
             cfg.keys.merge(&section, &entries)?;
         }

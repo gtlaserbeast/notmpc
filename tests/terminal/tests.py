@@ -176,3 +176,25 @@ def test_cli(mpd, bin):
     assert run("albumart", "-").returncode == 2, "Beta has no cover"
     r = run("update", "--wait")
     assert r.returncode == 0 and b"done" in r.stderr, r.stderr
+
+
+def test_marquee_scrolls_the_highlighted_row(mpd, bin):
+    # In the flat table at this width the Artist column is 5 cells, so
+    # "Artist A" is cut; only highlighted rows scroll instead.
+    mpd.reset(ALPHA, play=1)
+    cfg = "visualizer = false\ngroup_by_album = false\nart_width = 0\nmarquee_speed = {}\n"
+    t = Term(bin, mpd, cols=50, config=cfg.format(10))
+    row = lambda title: next(l for l in t.lines()[4:] if title in l)  # below the header
+    t.send("j")
+    t.send("k")  # the cursor moved: scrolling starts over, resting 1.5 s
+    start = row("Aone")
+    assert "Artis Aone" in start, start
+    assert "Arti… Atwo" in row("Atwo"), "other rows keep the ellipsis"
+    t.pump(1.5)  # rest over, 10 cells/s
+    assert "Artis" not in row("Aone") and "…" not in row("Aone"), row("Aone")
+    t.send("j")  # the browse cursor joins: both start from the beginning
+    assert "Artis Aone" in row("Aone") and "Artis Atwo" in row("Atwo"), t.text()
+    t.quit()
+    t = Term(bin, mpd, cols=50, config=cfg.format(0))
+    assert "Arti… Aone" in row("Aone"), "0 turns it off"
+    t.quit()

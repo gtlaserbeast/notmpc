@@ -20,6 +20,7 @@ use crate::app::{App, Hit, List, Mode, Prompt, TABS, Tab, Target};
 use crate::art::Rect;
 use crate::browser::Entry;
 use crate::config::{ProgressBar, Style, Theme, VisualizerStyle};
+use crate::marquee::Segs;
 use crate::mpd::State;
 use crate::nc::{self, BOLD, Color, ITALIC, Plane};
 use crate::pixelbar;
@@ -55,9 +56,6 @@ fn put(p: &mut Plane, y: u32, x: u32, s: &str, style: Style) -> u32 {
     p.putstr_yx(y, x, s);
     x + nc::width(s) as u32
 }
-
-/// Styled pieces of one line.
-type Segs = Vec<(String, Style)>;
 
 fn segs_width(segs: &Segs) -> u32 {
     segs.iter().map(|(s, _)| nc::width(s) as u32).sum()
@@ -106,6 +104,13 @@ fn fmt_audio(audio: &str) -> String {
 
 impl App<'_> {
     pub fn draw(&mut self) -> Result<()> {
+        self.marquee.begin();
+        let drawn = self.draw_frame();
+        self.marquee.end();
+        drawn
+    }
+
+    fn draw_frame(&mut self) -> Result<()> {
         let nc = self.nc;
         let mut p = nc.stdplane();
         p.erase();
@@ -782,10 +787,8 @@ impl App<'_> {
             (true, false) => "▸ ",
             (false, _) => "▾ ",
         };
-        let mut left: Segs = vec![
-            (caret.into(), hl.apply(t.dim)),
-            (if m.album.is_empty() { "(no album)".into() } else { m.album.clone() }, st(t.group_header)),
-        ];
+        let mut left: Segs =
+            vec![(if m.album.is_empty() { "(no album)".into() } else { m.album.clone() }, st(t.group_header))];
         if !m.year.is_empty() {
             left.push((format!(" ({})", m.year), st(t.date)));
         }
@@ -802,7 +805,13 @@ impl App<'_> {
         let right = format!(" {tracks} · {} ", fmt_time(group.total));
         let rw = nc::width(&right) as u32;
 
-        let lx = put_segs(p, y, x, w.saturating_sub(rw + 2), &left);
+        // the caret stays put while the rest scrolls
+        let lx = put(p, y, x, caret, hl.apply(t.dim));
+        let room = (x + w).saturating_sub(lx + rw + 2);
+        let lx = match self.scroll_if(hl, &left, room as usize) {
+            Some(window) => put_segs(p, y, lx, room, &window),
+            None => put_segs(p, y, lx, room, &left),
+        };
         let fill = (x + w).saturating_sub(lx + rw + 1);
         put(p, y, lx + 1, &"─".repeat(fill as usize), hl.apply(t.dim));
         put(p, y, x + w - rw, &right, hl.apply(t.dim));
@@ -859,8 +868,16 @@ impl App<'_> {
 
         let mut cx = put(p, y, x, marker, marker_style);
         for (text, width, style) in cols {
-            let s = nc::fit(&text, width.saturating_sub(1));
-            put(p, y, cx, &s, style);
+            let room = width.saturating_sub(1);
+            let segs = vec![(text, style)];
+            match self.scroll_if(hl, &segs, room) {
+                Some(window) => {
+                    put_segs(p, y, cx, room as u32, &window);
+                }
+                None => {
+                    put(p, y, cx, &nc::fit(&segs[0].0, room), style);
+                }
+            }
             cx += width as u32;
         }
         put(p, y, x + w - nc::width(&time) as u32, &time, st(t.text));
@@ -999,7 +1016,13 @@ impl App<'_> {
             let lead = if marked { "+".to_owned() } else { sym.to_owned() };
             let mut x = put(p, y, area.x + 1, &lead, if marked && !selected { t.group_header } else { st });
             x = put(p, y, x, " ", st);
-            put(p, y, x, &nc::fit(&label, (area.x + area.cols).saturating_sub(x + 1) as usize), st);
+            let room = (area.x + area.cols).saturating_sub(x + 1);
+            let segs = vec![(label, st)];
+            // only the column being browsed scrolls
+            match self.marquee.window(&segs, room as usize).filter(|_| selected && col == 1) {
+                Some(window) => put_segs(p, y, x, room, &window),
+                None => put(p, y, x, &nc::fit(&segs[0].0, room as usize), st),
+            };
         }
     }
 
@@ -1132,6 +1155,14 @@ fn gradient(stops: &[u32], t: f32) -> u32 {
 fn scale(rgb: u32, k: f32) -> u32 {
     let ch = |shift: u32| ((((rgb >> shift) & 0xff) as f32 * k).round().min(255.0) as u32) << shift;
     ch(16) | ch(8) | ch(0)
+}
+
+impl App<'_> {
+    /// `segs` scrolling in `cols` cells, on a highlighted row whose text is
+    /// too long for them.
+    fn scroll_if(&self, hl: Highlight, segs: &Segs, cols: usize) -> Option<Segs> {
+        if hl.fill.is_some() { self.marquee.window(segs, cols) } else { None }
+    }
 }
 
 /// How a queue row is highlighted: the highlight (`primary`) replaces the

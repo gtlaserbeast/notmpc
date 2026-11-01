@@ -99,6 +99,15 @@ one album in different folders stay separate, labelled with the folder.
 Mouse: click the query line to edit, a result to select, double-click to
 queue and play, the ▾/▸ arrow to fold.
 
+## Long titles
+
+Text too long for its column ends in `…`, except on the highlighted row
+and the browse cursor's row: there each cut field (title, artist, album,
+the album header) scrolls through its full text, rests at its start for
+1.5 s, and goes round again. Moving the cursor starts it over. Set the
+speed with `marquee_speed` (cells per second, default 8; 0 keeps the `…`).
+Nothing is redrawn while the text rests or when nothing is cut.
+
 ## Progress bar
 
 `progress_bar` picks one of three (click anywhere on it to seek):
@@ -270,6 +279,7 @@ in italics.
   pixel graphics when the terminal supports them, half-blocks otherwise.
 - `src/viz.rs`: the spectrum analyser (FIFO reader thread, FFT, bands).
 - `src/pixelbar.rs`: the optional pixel progress bar.
+- `src/marquee.rs`: scrolling for cut text on highlighted rows.
 
 ## Tests
 

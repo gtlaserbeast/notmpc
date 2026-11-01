@@ -12,6 +12,7 @@ use crate::browser::{Browser, Entry};
 use crate::config::{Config, ProgressBar};
 use crate::enqueue::{self, Item, Where};
 use crate::keys::{Action, Ctx, Lookup};
+use crate::marquee::Marquee;
 use crate::meta::Meta;
 use crate::mpd::{Ack, Conn, Song, State, Status};
 use crate::nc::{Input, Mouse, Nc, OwnedPlane};
@@ -144,13 +145,17 @@ pub struct App<'nc> {
     pub(crate) viz_plane: Option<OwnedPlane<'nc>>,
     /// Each bar's (steps lit, brightness step) as last drawn.
     pub(crate) viz_shown: Vec<(u32, u8)>,
+    /// Scrolls too-long text on highlighted rows.
+    pub(crate) marquee: Marquee,
 }
 
 impl<'nc> App<'nc> {
     pub fn new(nc: &'nc Nc, cfg: Config, conn: Conn) -> Result<Self> {
         let pixel_bar = if cfg.progress_bar == ProgressBar::Pixel { PixelBar::new(nc) } else { None };
+        let marquee = Marquee::new(cfg.marquee_speed);
         let mut app = Self {
             nc,
+            marquee,
             queue: Queue::new(cfg.group_by_album),
             follow: cfg.follow_cursor,
             cfg,
@@ -210,13 +215,17 @@ impl<'nc> App<'nc> {
 
     /// How long the main loop may wait for input: until the screen next
     /// changes by itself (a visualizer frame, the clock's next second, a
-    /// search or preview due, a message expiring), at most a second.
+    /// search or preview due, a message expiring, text scrolling), at most
+    /// a second.
     pub fn frame_interval(&self) -> Duration {
         // wake just after a deadline, not just before it
         const MARGIN: Duration = Duration::from_millis(2);
         let mut wait = Duration::from_secs(1);
         if self.viz_on && self.viz.as_ref().is_some_and(Visualizer::active) {
             wait = wait.min(Duration::from_secs(1) / self.cfg.visualizer_fps);
+        }
+        if let Some(step) = self.marquee.next_step() {
+            wait = wait.min(step + MARGIN);
         }
         if self.is_playing() {
             let into = Duration::from_nanos(self.elapsed().subsec_nanos().into());
@@ -235,8 +244,8 @@ impl<'nc> App<'nc> {
     }
 
     /// What changes on screen with time alone, apart from the visualizer.
-    pub fn clock(&self) -> (u64, bool) {
-        (self.elapsed().as_secs(), self.current_message().is_some())
+    pub fn clock(&self) -> (u64, bool, Option<(u64, Option<usize>)>) {
+        (self.elapsed().as_secs(), self.current_message().is_some(), self.marquee.step())
     }
 
     /// Refetches whatever the idle subsystems in `changed` affect.

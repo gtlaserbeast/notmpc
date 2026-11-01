@@ -8,6 +8,7 @@ mod cli;
 mod config;
 mod enqueue;
 mod keys;
+mod marquee;
 mod meta;
 mod mpd;
 mod nc;
