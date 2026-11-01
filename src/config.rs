@@ -261,7 +261,9 @@ pub struct Config {
     /// Spectrum behind the header, fed by MPD's `fifo` output.
     pub visualizer: bool,
     pub visualizer_fifo: PathBuf,
-    /// Header rows it fills (the header is 2 rows, plus the progress bar).
+    /// How tall the header is while the spectrum shows, in rows above the
+    /// progress bar (2 without it); the title and artist / album sit in
+    /// the middle and the spectrum fills it and the bar's row.
     pub visualizer_rows: u32,
     pub visualizer_fps: u32,
     pub visualizer_style: VisualizerStyle,
@@ -299,7 +301,7 @@ impl Default for Config {
             visualizer_fifo: env::var_os("XDG_RUNTIME_DIR")
                 .map_or_else(|| PathBuf::from("/tmp"), PathBuf::from)
                 .join("mpd/visualizer.fifo"),
-            visualizer_rows: 3,
+            visualizer_rows: 6,
             visualizer_fps: 20,
             visualizer_style: VisualizerStyle::Braille,
             visualizer_delay_ms: 150,
@@ -370,7 +372,7 @@ impl Config {
         let mut cfg: Self = toml::from_str(text)?;
         cfg.art_width = cfg.art_width.min(90);
         cfg.status_update_interval_ms = cfg.status_update_interval_ms.max(100);
-        cfg.visualizer_rows = cfg.visualizer_rows.clamp(1, 3);
+        cfg.visualizer_rows = cfg.visualizer_rows.clamp(2, 12);
         cfg.visualizer_fps = cfg.visualizer_fps.clamp(5, 60);
         cfg.marquee_speed = cfg.marquee_speed.min(60);
         for (section, entries) in std::mem::take(&mut cfg.key_overrides) {
@@ -576,7 +578,7 @@ mod tests {
         let cfg = Config::parse(
             r##"
             volume_step = 2
-            visualizer_rows = 9
+            visualizer_rows = 20
             [keys.global]
             "<C-p>" = "TogglePause"
             "s" = "None"
@@ -589,7 +591,7 @@ mod tests {
         .unwrap();
         assert_eq!(cfg.volume_step, 2);
         assert_eq!(cfg.seek_step, 5, "unset keys keep their defaults");
-        assert_eq!(cfg.visualizer_rows, 3, "clamped");
+        assert_eq!(cfg.visualizer_rows, 12, "clamped");
         assert_eq!(cfg.theme.cursor.bg, Color::Rgb(0x112233));
         assert_eq!(cfg.theme.progress_symbols[0], "[");
         assert_eq!(cfg.theme.mode_symbols[4], "F");

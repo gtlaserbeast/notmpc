@@ -10,7 +10,9 @@
 //! message / prompt   [Playing]  46 songs · 3:12:05 · 1:04:12 left   Repeat …
 //! ```
 //!
-//! The spectrum sits behind the first three rows, on a plane of its own.
+//! The spectrum sits behind the header and the progress bar, on a plane of
+//! its own; while it shows, the header is `visualizer_rows` tall (6) with
+//! the two text rows in the middle.
 //! A cell shows one glyph, so the header text skips its spaces: the bars
 //! show through every gap, not just around the text. The mode toggles live
 //! in the footer: kitty draws Nerd Font icons two cells wide only while the
@@ -31,6 +33,10 @@ use crate::pixelbar;
 use crate::queue::{Queue, Row};
 
 const FOOTER_ROWS: u32 = 1;
+/// Header rows for the title and artist / album, without the spectrum.
+const HEADER_TEXT_ROWS: u32 = 2;
+/// The fewest rows the body keeps when the spectrum makes the header taller.
+const MIN_BODY_ROWS: u32 = 3;
 /// Below this width the queue tab drops the art pane.
 const MIN_ART_COLS: u32 = 80;
 
@@ -151,9 +157,8 @@ impl App<'_> {
         p.erase();
         self.hits.borrow_mut().clear();
         let (rows, cols) = p.dim_yx();
-        // header (2 rows), progress, tabs
-        let header_rows = 4;
-        if rows < header_rows + FOOTER_ROWS + 3 || cols < 40 {
+        // header text (taller with the spectrum on), progress, tabs
+        if rows < HEADER_TEXT_ROWS + 2 + FOOTER_ROWS + MIN_BODY_ROWS || cols < 40 {
             self.forget_images();
             self.header_plane = None;
             self.viz_plane = None;
@@ -163,20 +168,22 @@ impl App<'_> {
         }
 
         let pixel_bar = self.pixel_bar.is_some();
-        self.layer_header(cols)?;
+        let text_rows = self.header_text_rows(rows);
+        let header_rows = text_rows + 2;
+        self.layer_header(cols, text_rows)?;
         self.draw_viz(cols, true);
         let mut hp = self.header_plane.take().expect("created above");
         hp.erase();
-        self.draw_header(&mut hp, cols);
+        self.draw_header(&mut hp, cols, text_rows);
         match self.cfg.progress_bar {
             _ if pixel_bar => {}
-            ProgressBar::Symbols => self.draw_progress(&mut hp, 2, cols),
-            ProgressBar::Braille | ProgressBar::Pixel => self.draw_braille_bar(&mut hp, 2, cols),
+            ProgressBar::Symbols => self.draw_progress(&mut hp, text_rows, cols),
+            ProgressBar::Braille | ProgressBar::Pixel => self.draw_braille_bar(&mut hp, text_rows, cols),
         }
         reset(&mut hp);
         self.header_plane = Some(hp);
         if pixel_bar {
-            self.draw_pixel_bar(2, cols)?;
+            self.draw_pixel_bar(text_rows, cols)?;
         }
 
         self.draw_tabs(&mut p, header_rows - 1, cols);
@@ -206,14 +213,16 @@ impl App<'_> {
     /// progress bar, row 2); the pixel bar on its own, since text shouldn't
     /// sit over pixel images. notcurses stacks a new plane on top, so they
     /// are made in that order.
-    fn layer_header(&mut self, cols: u32) -> Result<()> {
-        let hp_rows = if self.pixel_bar.is_some() { 2 } else { 3 };
+    fn layer_header(&mut self, cols: u32, text_rows: u32) -> Result<()> {
+        let hp_rows = if self.pixel_bar.is_some() { text_rows } else { text_rows + 1 };
         if self.header_plane.as_ref().is_some_and(|h| h.dim_yx() == (hp_rows, cols)) {
             return Ok(());
         }
         self.header_plane = None;
         self.viz_plane = None;
-        self.viz_plane = Some(self.nc.new_plane(0, 0, self.cfg.visualizer_rows, cols)?);
+        // the spectrum fills the header and the progress bar's row
+        self.viz_plane = Some(self.nc.new_plane(0, 0, text_rows + 1, cols)?);
+        self.viz_shown.clear();
         let mut h = self.nc.new_plane(0, 0, hp_rows, cols)?;
         h.set_base_transparent();
         h.move_top();
@@ -326,11 +335,22 @@ impl App<'_> {
         self.hits.borrow_mut().push(Hit { y, x, w, target });
     }
 
-    fn draw_header(&self, p: &mut Plane, cols: u32) {
+    /// Rows above the progress bar: two for the title and artist / album,
+    /// or `visualizer_rows` while the spectrum shows, leaving the body
+    /// at least `MIN_BODY_ROWS`.
+    fn header_text_rows(&self, rows: u32) -> u32 {
+        let want = if self.viz_on { self.cfg.visualizer_rows } else { HEADER_TEXT_ROWS };
+        let most = rows.saturating_sub(2 + FOOTER_ROWS + MIN_BODY_ROWS);
+        want.min(most).max(HEADER_TEXT_ROWS)
+    }
+
+    /// The title and artist / album, centred in the `rows` above the bar.
+    fn draw_header(&self, p: &mut Plane, cols: u32, rows: u32) {
         let t = &self.cfg.theme;
         let s = &self.status;
+        let top = (rows - HEADER_TEXT_ROWS) / 2;
 
-        // row 0: title   (Updating…)
+        // title   (Updating…)
         let left0: Segs = Vec::new();
 
         let mut right0: Segs = Vec::new();
@@ -342,9 +362,9 @@ impl App<'_> {
             Some((_, m)) => vec![(m.title.clone(), italic_if(t.title, m.inferred))],
             None => vec![("No Song".into(), t.title)],
         };
-        draw_three(p, 0, cols, &left0, &center0, &right0);
+        draw_three(p, top, cols, &left0, &center0, &right0);
 
-        // row 1: artist  album (the time and format are on the tab row)
+        // artist  album (the time and format are on the tab row)
         let center1 = match &self.song {
             Some((_, m)) => vec![
                 (m.artist.clone(), italic_if(t.artist, m.inferred)),
@@ -354,7 +374,7 @@ impl App<'_> {
             None => Vec::new(),
         };
 
-        draw_three(p, 1, cols, &Vec::new(), &center1, &Vec::new());
+        draw_three(p, top + 1, cols, &Vec::new(), &center1, &Vec::new());
     }
 
     /// `elapsed / total (bitrate, format)` at most `max` cells wide: when

@@ -140,8 +140,12 @@ transparent plane above it. It needs MPD's `fifo` output:
     }
 
 notmpc reads `$XDG_RUNTIME_DIR/mpd/visualizer.fifo` by default
-(`visualizer_fifo`), at 20 fps (`visualizer_fps`), over 3 rows
-(`visualizer_rows`), two bars per column in braille dots. With
+(`visualizer_fifo`), at 20 fps (`visualizer_fps`), two bars per column in
+braille dots. While it shows, the header is taller: 6 rows above the
+progress bar instead of 2 (`visualizer_rows`, 2-12), with the title and
+artist / album in the middle and the spectrum filling it and the bar's
+row. The cover column narrows to match, so a square cover still fills the
+height; a short window keeps at least 3 rows for the list. With
 `visualizer_style = "octants"` the same two bars per column are solid,
 drawn with Unicode 16's octant blocks; that needs a terminal or font that
 draws them (kitty does) and glibc 2.41 or newer. With

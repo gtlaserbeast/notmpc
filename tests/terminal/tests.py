@@ -254,3 +254,14 @@ def test_marquee_count_once_stops_at_the_ellipsis(mpd, bin):
     t.pump(0.6)
     assert "…" not in footer() and "Athree" in footer(), footer()
     t.quit()
+
+
+def test_the_header_grows_with_the_visualizer(mpd, bin):
+    mpd.reset(play=1)
+    t = Term(bin, mpd, rows=24, config="visualizer = true\nmarquee_speed = 0\n")
+    tabs = lambda: t.find("Directories")[1]
+    title = lambda: next(y for y, l in enumerate(t.lines()) if "Loose One" in l)
+    assert tabs() == 7 and title() == 2, t.text()  # 6 rows, title centred, bar, tabs
+    t.send("V", settle=1.0)
+    assert tabs() == 3 and title() == 0, t.text()
+    t.quit()
