@@ -138,6 +138,9 @@ transparent plane above it. It needs MPD's `fifo` output:
 notmpc reads `$XDG_RUNTIME_DIR/mpd/visualizer.fifo` by default
 (`visualizer_fifo`), at 20 fps (`visualizer_fps`), over 3 rows
 (`visualizer_rows`), two bars per column in braille dots. With
+`visualizer_style = "octants"` the same two bars per column are solid,
+drawn with Unicode 16's octant blocks; that needs a terminal or font that
+draws them (kitty does) and glibc 2.41 or newer. With
 `visualizer_style = "blocks"` it's one bar per column in eighth blocks,
 which colours whole cells (twice the bytes, the same CPU). It idles when
 nothing plays. `V` hides / shows it

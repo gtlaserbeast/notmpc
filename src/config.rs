@@ -189,6 +189,10 @@ pub enum VisualizerStyle {
     Braille,
     /// A bar per column in eighth blocks, full cells as background.
     Blocks,
+    /// Two solid bars per column in Unicode 16 octants (2×4 blocks): the
+    /// detail of braille, filled in like blocks. Needs a font or terminal
+    /// that draws them (kitty does), and glibc ≥ 2.41 to know their width.
+    Octants,
 }
 
 /// Whether `name` is a top-level config key: parsing it alone fails on its

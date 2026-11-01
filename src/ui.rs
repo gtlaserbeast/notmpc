@@ -228,15 +228,16 @@ impl App<'_> {
     /// The spectrum, rising from the bottom of the header. `blocks`: a bar
     /// per column in eighth blocks, full cells drawn as background so text
     /// over them keeps the colour. `braille`: two bars per column, one per
-    /// dot column, in quarter-cell steps. A bar's colour is the palette's
+    /// dot column, in quarter-cell steps. `octants`: the same two bars in
+    /// solid 2×4 blocks, full cells as background like `blocks`. A bar's colour is the palette's
     /// gradient across the spectrum, brighter the taller it is. Unless
     /// `force`, leaves the plane alone (and returns false) when the frame
     /// would look the same as the last.
     fn draw_viz(&mut self, cols: u32, force: bool) -> bool {
         let Some(mut vp) = self.viz_plane.take() else { return false };
         let rows = vp.dim_yx().0;
-        let braille = self.cfg.visualizer_style == VisualizerStyle::Braille;
-        let (per_col, steps) = if braille { (2, 4) } else { (1, 8) };
+        let style = self.cfg.visualizer_style;
+        let (per_col, steps) = if style == VisualizerStyle::Blocks { (1, 8) } else { (2, 4) };
         // (steps lit, brightness step) per bar: all a frame shows. Four
         // brightness steps, so a lit cell's colour changes (and is
         // re-sent) only when its bar crosses one.
@@ -269,15 +270,24 @@ impl App<'_> {
             for r in 0..rows {
                 let y = rows - 1 - r;
                 let fill = |n: u32| n.saturating_sub(r * steps).min(steps) as usize;
-                if braille {
-                    // dots filled from the bottom of the cell: left column, right column
-                    const LEFT: [u32; 5] = [0, 0x40, 0x44, 0x46, 0x47];
-                    const RIGHT: [u32; 5] = [0, 0x80, 0xa0, 0xb0, 0xb8];
+                if style != VisualizerStyle::Blocks {
                     let (l, rt) = (fill(col[0].0), fill(col.get(1).map_or(0, |c| c.0)));
                     if l == 0 && rt == 0 {
                         break;
                     }
-                    let ch = char::from_u32(0x2800 + (LEFT[l] | RIGHT[rt])).unwrap_or(' ');
+                    if style == VisualizerStyle::Octants && l == 4 && rt == 4 {
+                        vp.set_bg(colour(x, level));
+                        vp.putstr_yx(y, x, " ");
+                        continue;
+                    }
+                    let ch = if style == VisualizerStyle::Braille {
+                        // dots filled from the bottom of the cell: left column, right column
+                        const LEFT: [u32; 5] = [0, 0x40, 0x44, 0x46, 0x47];
+                        const RIGHT: [u32; 5] = [0, 0x80, 0xa0, 0xb0, 0xb8];
+                        char::from_u32(0x2800 + (LEFT[l] | RIGHT[rt])).unwrap_or(' ')
+                    } else {
+                        OCTANT_BARS[l][rt]
+                    };
                     vp.set_bg(Color::Default);
                     vp.set_bg_transparent();
                     vp.putstr_yx(y, x, ch.encode_utf8(&mut [0; 4]));
@@ -1201,6 +1211,22 @@ impl App<'_> {
         if hl.fill.is_some() { self.marquee.window(segs, cols) } else { None }
     }
 }
+
+/// One cell of two bars side by side, `[left][right]`, each 0-4 quarters
+/// tall from the bottom: Unicode 16 octants, or the older block or
+/// quadrant character where Unicode already had that shape.
+const OCTANT_BARS: [[char; 5]; 5] = [
+    // left 0: nothing, right ⅛ (U+1CEA0), ▗, octant-468, ▐
+    [' ', '\u{1cea0}', '\u{2597}', '\u{1cd96}', '\u{2590}'],
+    // left ¼ (U+1CEA3), ▂, octant-678, octant-4678, octant-24678
+    ['\u{1cea3}', '\u{2582}', '\u{1cdcb}', '\u{1cdd3}', '\u{1cdd5}'],
+    // ▖, octant-578, ▄, octant-45678, ▟
+    ['\u{2596}', '\u{1cdbb}', '\u{2584}', '\u{1cde1}', '\u{259f}'],
+    // octant-357, octant-3578, octant-35678, ▆, octant-2345678
+    ['\u{1cd48}', '\u{1cdbf}', '\u{1cdde}', '\u{2586}', '\u{1cde5}'],
+    // ▌, octant-13578, ▙, octant-1345678, █ (drawn as background)
+    ['\u{258c}', '\u{1cdc0}', '\u{2599}', '\u{1cde4}', '\u{2588}'],
+];
 
 /// How a queue row is highlighted: the highlight (`primary`) replaces the
 /// row's colours; the browse cursor only tints the background.
