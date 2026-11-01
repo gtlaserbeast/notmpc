@@ -2,9 +2,9 @@
 //!
 //! ```text
 //!                                     Kiska
-//! 2:51 / 5:25 (731 kbps, FLAC 16/44.1)        Artist - Album
+//!                                     Artist - Album
 //! ⠶⠶⠶⠶⠶⠶⠶⠶⠶⠶⠶⠶⠶⠶⢾⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤
-//!                    Queue    Directories    Search
+//! 2:51 / 5:25 (FLAC 16/44.1)   Queue    Directories    Search
 //! [ album art ]   PACIFIC (2013) · Various ─────────── 8 tracks · 42:17
 //!                 ▶ 7 Kiska                Tatsuro Yamashita        5:25
 //! message / prompt   [Playing]  46 songs · 3:12:05 · 1:04:12 left   Repeat …
@@ -344,28 +344,7 @@ impl App<'_> {
         };
         draw_three(p, 0, cols, &left0, &center0, &right0);
 
-        // row 1: time (bitrate, format)   artist - album   modes
-        let mut info = format!("{} / {}", fmt_time(self.elapsed()), fmt_time(s.duration));
-        let mut extra = Vec::new();
-        if let Some(b) = s.bitrate {
-            extra.push(format!("{b} kbps"));
-        }
-        if let Some(a) = &s.audio {
-            let codec = self
-                .song
-                .as_ref()
-                .and_then(|(song, _)| song.file.rsplit_once('.'))
-                .map(|(_, ext)| ext.to_ascii_uppercase());
-            extra.push(match codec {
-                Some(c) => format!("{c} {}", fmt_audio(a)),
-                None => fmt_audio(a),
-            });
-        }
-        if !extra.is_empty() {
-            info += &format!(" ({})", extra.join(", "));
-        }
-        let left1 = vec![(info, t.text)];
-
+        // row 1: artist - album (the time and format are on the tab row)
         let center1 = match &self.song {
             Some((_, m)) => vec![
                 (m.artist.clone(), italic_if(t.artist, m.inferred)),
@@ -375,7 +354,34 @@ impl App<'_> {
             None => Vec::new(),
         };
 
-        draw_three(p, 1, cols, &left1, &center1, &Vec::new());
+        draw_three(p, 1, cols, &Vec::new(), &center1, &Vec::new());
+    }
+
+    /// `elapsed / total (bitrate, format)` at most `max` cells wide: when
+    /// narrow the bitrate goes first, then the format.
+    fn track_info(&self, max: usize) -> String {
+        let s = &self.status;
+        let time = format!("{} / {}", fmt_time(self.elapsed()), fmt_time(s.duration));
+        let bitrate = s.bitrate.map(|b| format!("{b} kbps"));
+        let format = s.audio.as_ref().map(|a| {
+            let codec = self
+                .song
+                .as_ref()
+                .and_then(|(song, _)| song.file.rsplit_once('.'))
+                .map(|(_, ext)| ext.to_ascii_uppercase());
+            match codec {
+                Some(c) => format!("{c} {}", fmt_audio(a)),
+                None => fmt_audio(a),
+            }
+        });
+        let with = |extra: &[&Option<String>]| {
+            let extra: Vec<&str> = extra.iter().filter_map(|e| e.as_deref()).collect();
+            if extra.is_empty() { time.clone() } else { format!("{time} ({})", extra.join(", ")) }
+        };
+        [with(&[&bitrate, &format]), with(&[&format]), time.clone()]
+            .into_iter()
+            .find(|i| nc::width(i) <= max)
+            .unwrap_or_default()
     }
 
     /// The mode toggles (`mode_symbols`, lit when on) at the right end of
@@ -514,6 +520,9 @@ impl App<'_> {
         let labels: Vec<String> = TABS.iter().map(|(_, l)| format!("{PAD}{l}{PAD}")).collect();
         let total: u32 = labels.iter().map(|l| nc::width(l) as u32).sum::<u32>() + GAP * (labels.len() as u32 - 1);
         let mut x = cols.saturating_sub(total) / 2;
+        // the track's time and format, left of the tabs
+        let info = self.track_info(x.saturating_sub(2) as usize);
+        put(p, y, 0, &info, t.text);
         for ((tab, _), label) in TABS.iter().zip(&labels) {
             let st = if *tab == self.tab { t.tab_active } else { t.tab_inactive };
             let end = put(p, y, x, label, st);
