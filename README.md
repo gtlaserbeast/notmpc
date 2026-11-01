@@ -149,7 +149,7 @@ nothing plays. `V` hides / shows it
 **Delay.** MPD writes the FIFO as it plays, but PipeWire buffers before the
 speakers, so the bars would run ahead. notmpc timestamps the audio and
 draws what arrived `visualizer_delay_ms` ago (default 150). Tune it by ear
-with `[` / `]` (±10 ms); the value is saved to
+with `[` / `]` (±5 ms); the value is saved to
 `~/.local/state/notmpc/state.toml` and wins over the config. It stays put
 unless PipeWire's quantum changes (another app asking for lower latency).
 

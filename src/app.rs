@@ -683,7 +683,8 @@ impl<'nc> App<'nc> {
                     self.say("the visualizer is off");
                     return Ok(true);
                 };
-                let ms = viz.delay().as_millis() as i64 + if action == VisualizerDelayUp { 10 } else { -10 };
+                const STEP: i64 = 5;
+                let ms = viz.delay().as_millis() as i64 + if action == VisualizerDelayUp { STEP } else { -STEP };
                 let ms = ms.clamp(0, 2000) as u64;
                 viz.set_delay(Duration::from_millis(ms));
                 let saved = crate::config::State::update(|s| s.visualizer_delay_ms = Some(ms));
