@@ -10,6 +10,8 @@
 
 pub mod sys;
 
+use std::cell::RefCell;
+use std::collections::VecDeque;
 use std::ffi::CString;
 use std::marker::PhantomData;
 use std::ops::{Deref, DerefMut};
@@ -158,6 +160,8 @@ pub struct Nc {
     /// The terminal's palette as it answered notcurses' startup queries;
     /// None if it didn't.
     palette: Option<Box<[u32; 256]>>,
+    /// Input read ahead while checking for a leaked mouse report.
+    pending: RefCell<VecDeque<(u32, sys::ncinput)>>,
 }
 
 impl Nc {
@@ -200,7 +204,7 @@ impl Nc {
             libc::sigaction(libc::SIGWINCH, &sa, ptr::null_mut());
             libc::sigaction(libc::SIGCONT, &sa, ptr::null_mut());
         }
-        Ok(Self { raw, default_fg, palette })
+        Ok(Self { raw, default_fg, palette, pending: RefCell::default() })
     }
 
     /// Whether the terminal was resized (or we were resumed) since the last
@@ -330,7 +334,43 @@ impl Nc {
     }
 
     /// Waits up to `timeout` for a key press or mouse click.
+    ///
+    /// notcurses' SGR mouse parser takes digits only, but kitty's pixel
+    /// reports go negative when the pointer is above or left of the window
+    /// (leaving it, say). Such a report comes through as typed characters
+    /// (`Esc [ < 2 8 8 ; 5 1 2 ; - 7 M`), which would run `<`, `2` and so on
+    /// as commands. So an Esc is held until what follows shows it isn't one.
     pub fn get(&self, timeout: Duration) -> Result<Option<Event>> {
+        // the rest of one write to the terminal: an Esc key waits this long
+        const REPORT_GAP: Duration = Duration::from_millis(10);
+        let queued = self.pending.borrow_mut().pop_front();
+        let (id, ni) = match queued {
+            Some(next) => next,
+            None => self.read(timeout)?,
+        };
+        if id == key::ESC && self.pending.borrow().is_empty() {
+            let mut held = VecDeque::new();
+            let mut text = vec![id];
+            loop {
+                let (next, next_ni) = self.read(REPORT_GAP)?;
+                if next == 0 {
+                    break;
+                }
+                held.push_back((next, next_ni));
+                text.push(next);
+                match mouse_report(&text) {
+                    Report::Complete => return Ok(None),
+                    Report::Partial => {}
+                    Report::No => break,
+                }
+            }
+            *self.pending.borrow_mut() = held;
+        }
+        self.event(id, &ni)
+    }
+
+    /// The next input, or id 0 after `timeout`.
+    fn read(&self, timeout: Duration) -> Result<(u32, sys::ncinput)> {
         // notcurses wants an absolute CLOCK_MONOTONIC deadline, not a duration.
         let mut now = libc::timespec { tv_sec: 0, tv_nsec: 0 };
         // SAFETY: now is a valid out-param.
@@ -342,10 +382,15 @@ impl Nc {
         };
         let mut ni = sys::ncinput::default();
         // SAFETY: raw is live; ts and ni outlive the call.
-        let id = unsafe { sys::notcurses_get(self.raw, &ts, &mut ni) };
+        match unsafe { sys::notcurses_get(self.raw, &ts, &mut ni) } {
+            u32::MAX => bail!("notcurses_get failed"),
+            id => Ok((id, ni)),
+        }
+    }
+
+    fn event(&self, id: u32, ni: &sys::ncinput) -> Result<Option<Event>> {
         match id {
             0 => Ok(None),
-            u32::MAX => bail!("notcurses_get failed"),
             // Terminals speaking the kitty keyboard protocol report releases too.
             _ if ni.evtype == sys::ncintype_e_NCTYPE_RELEASE => Ok(None),
             key::BUTTON1..=key::BUTTON11 => Ok((ni.y >= 0 && ni.x >= 0).then_some(Event::Mouse(Mouse {
@@ -371,6 +416,48 @@ impl Drop for Nc {
         // SAFETY: raw came from notcurses_init and is stopped exactly once.
         unsafe { sys::notcurses_stop(self.raw) };
     }
+}
+
+/// How far `text` matches a mouse report that reached us as keys.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Report {
+    /// It can't be one.
+    No,
+    /// So far it could be.
+    Partial,
+    Complete,
+}
+
+/// Matches `Esc [ < button ; x ; y M` (or `m`), where x and y may be
+/// negative: the reports notcurses can't parse.
+fn mouse_report(text: &[u32]) -> Report {
+    let ch = |c: char| c as u32;
+    let digit = |c: u32| (ch('0')..=ch('9')).contains(&c);
+    match text {
+        [] => return Report::Partial,
+        [esc, ..] if *esc != key::ESC => return Report::No,
+        [_] => return Report::Partial,
+        [_, b, ..] if *b != ch('[') => return Report::No,
+        [_, _] => return Report::Partial,
+        [_, _, l, ..] if *l != ch('<') => return Report::No,
+        _ => {}
+    }
+    // the three numbers, then the final letter
+    let (mut field, mut digits) = (0, 0);
+    for (i, &c) in text.iter().enumerate().skip(3) {
+        if digit(c) {
+            digits += 1;
+        } else if c == ch('-') && field > 0 && digits == 0 && text[i - 1] == ch(';') {
+            // a sign, on x or y only
+        } else if c == ch(';') && field < 2 && digits > 0 {
+            (field, digits) = (field + 1, 0);
+        } else if (c == ch('M') || c == ch('m')) && field == 2 && digits > 0 {
+            return if i + 1 == text.len() { Report::Complete } else { Report::No };
+        } else {
+            return Report::No;
+        }
+    }
+    Report::Partial
 }
 
 /// A plane borrowed from its notcurses context.
@@ -615,7 +702,25 @@ pub fn fit(s: &str, cols: usize) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{Input, Visual, xterm_rgb};
+    use super::{Input, Report, Visual, mouse_report, xterm_rgb};
+
+    #[test]
+    fn leaked_mouse_reports_are_recognised() {
+        let check = |s: &str| {
+            let text: Vec<u32> = s.chars().map(|c| if c == '^' { super::key::ESC } else { c as u32 }).collect();
+            mouse_report(&text)
+        };
+        for whole in ["^[<288;512;-7M", "^[<288;-3;100M", "^[<32;-1;-1m", "^[<0;5;6M"] {
+            assert_eq!(check(whole), Report::Complete, "{whole}");
+            for end in 1..whole.len() {
+                assert_eq!(check(&whole[..end]), Report::Partial, "{whole} up to {end}");
+            }
+        }
+        // keys that merely start the same way stay keys
+        for keys in ["^q", "^[q", "^[<q", "^[<2q", "^[<;1;1M", "^[<-1;1;1M", "^[<1;1M", "^[<1;2;3;4M", "^[<1;2;3Mx"] {
+            assert_eq!(check(keys), Report::No, "{keys}");
+        }
+    }
 
     #[test]
     fn pixels_read_back_as_rgba() {

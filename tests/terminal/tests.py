@@ -1,6 +1,7 @@
 """End-to-end checks of notmpc in a terminal. Each test gets the shared
 private MPD (`mpd`) and the notmpc binary (`bin`)."""
 
+import os
 import subprocess
 from pathlib import Path
 
@@ -264,4 +265,22 @@ def test_the_header_grows_with_the_visualizer(mpd, bin):
     assert tabs() == 7 and title() == 2, t.text()  # 6 rows, title centred, bar, tabs
     t.send("V", settle=1.0)
     assert tabs() == 3 and title() == 0, t.text()
+    t.quit()
+
+
+def test_mouse_leaving_upwards_is_not_typed(mpd, bin):
+    # kitty's pixel mouse reports go negative above the window; notcurses
+    # can't parse those and passes them on as keys (`<` skips, `2` a tab).
+    mpd.reset(ALPHA, play=2)
+    t = Term(bin, mpd)
+    for report in (b"\x1b[<288;512;-7M", b"\x1b[<288;-3;100M", b"\x1b[<32;1212;-40m"):
+        os.write(t.fd, report)
+        t.pump(0.5)
+        assert mpd.current() == "Atwo" and not t.find("Music"), t.text()
+    t.send("?")
+    assert t.find("Global"), "keys still work"
+    t.send("\x1b")
+    assert not t.find("Global"), "and Esc alone is still Esc"
+    t.send("[", settle=0.8)  # the same characters, one key at a time, still act
+    assert t.find("the visualizer is"), t.text()
     t.quit()
