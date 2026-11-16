@@ -10,6 +10,9 @@
 //! - insert: places the songs right after the current one.
 //!
 //! If MPD is stopped, the first new song starts.
+//!
+//! `next`, `prev`, `toggle` and `clear` are the plain controls, for key
+//! bindings elsewhere (yazi's, a compositor's).
 
 use std::fs;
 use std::io::{IsTerminal, Write};
@@ -31,6 +34,9 @@ usage: notmpc                      run the player
                                    scan the music directory (or DIR) for changes
        notmpc rescan [DIR] [--wait]
                                    same, re-reading unchanged files too
+       notmpc next | prev          skip to the next / previous song
+       notmpc toggle               play or pause (plays from stopped too)
+       notmpc clear                empty the queue
        notmpc albumart [FILE|-]    save the playing song's cover (default: stdout)
                                    exit 2: no cover, 3: nothing playing
        notmpc config               print an example config with every setting
@@ -48,6 +54,7 @@ pub fn dispatch(args: &[String]) -> Option<Result<ExitCode>> {
         "insert" => ok(run(Where::Next, rest)),
         "update" => ok(update("update", rest)),
         "rescan" => ok(update("rescan", rest)),
+        "next" | "prev" | "toggle" | "clear" => ok(control(args[0].as_str(), rest)),
         "albumart" => albumart(rest),
         "config" => {
             print!("{}", include_str!("../config.example.toml"));
@@ -94,6 +101,26 @@ fn update(cmd: &str, args: &[String]) -> Result<()> {
         }
     }
     eprintln!("notmpc: database update #{job} done");
+    Ok(())
+}
+
+/// `next`, `prev`, `toggle`, `clear`: one MPD command each. `toggle`
+/// pauses while playing and otherwise plays, as mpc's does.
+fn control(cmd: &str, args: &[String]) -> Result<()> {
+    if !args.is_empty() {
+        bail!("usage: notmpc {cmd}");
+    }
+    let mut conn = Conn::connect(&Target::from_env())?;
+    let cmd = match cmd {
+        "next" => "next",
+        "prev" => "previous",
+        "clear" => "clear",
+        _ => match Status::parse(&conn.command("status")?).state {
+            crate::mpd::State::Play => "pause 1",
+            _ => "play",
+        },
+    };
+    conn.command(cmd)?;
     Ok(())
 }
 

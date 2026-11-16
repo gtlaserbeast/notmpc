@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Runs the terminal tests: python3 tests/terminal/run.py [NAME...]
 
-Needs mpd, mpc and ffmpeg, Python with pyte, and a release build
+Needs mpd and ffmpeg, Python with pyte, and a release build
 (cargo build --release; or set NOTMPC_BIN). NAME picks tests by substring.
 """
 

@@ -5,7 +5,8 @@ a socket in a temp directory; `Term` runs notmpc in a pty, answers the
 terminal queries notcurses sends at startup (as xterm, or as kitty with
 its keyboard protocol), and keeps a rendered screen (pyte) for xterm.
 Nothing here touches the user's MPD, config or state: every path notmpc
-and mpc could look at points into the temp directory.
+could look at points into the temp directory, and the tests speak to the
+private MPD over its socket themselves (no mpc needed).
 """
 
 import fcntl
@@ -14,6 +15,7 @@ import pty
 import re
 import select
 import shutil
+import socket
 import struct
 import subprocess
 import tempfile
@@ -76,7 +78,8 @@ class Mpd:
                                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         if not wait_for(self.socket.exists, 10):
             raise RuntimeError(f"MPD didn't start; see {self.dir / 'mpd.log'}")
-        self.mpc("update", "--wait")
+        self.cmd("update")
+        wait_for(lambda: "updating_db" not in self.status(), 30)
 
     def _make_library(self):
         def track(path, seconds, tags):
@@ -93,27 +96,60 @@ class Mpd:
                         "-frames:v", "1", str(self.lib / "Artist A/Alpha (2001)/cover.png")], check=True)
         track(self.lib / self.UNTAGGED / "01  Loose One.flac", SECONDS, {})
 
-    def mpc(self, *args):
-        return subprocess.run(["mpc", *args], env=self.env, capture_output=True, text=True).stdout
-
-    def queue(self):
-        return self.mpc("playlist", "-f", "%title%").split("\n")[:-1]
+    def cmd(self, command):
+        """Sends one command to the private MPD; its reply as (key, value)
+        pairs. Raises on an error (ACK)."""
+        with socket.socket(socket.AF_UNIX) as sock:
+            sock.connect(str(self.socket))
+            f = sock.makefile("rwb")
+            f.readline()  # OK MPD <version>
+            f.write(command.encode() + b"\n")
+            f.flush()
+            pairs = []
+            while (line := f.readline().decode().rstrip("\n")) != "OK":
+                if line.startswith("ACK") or not line:
+                    raise RuntimeError(f"MPD: {command}: {line or 'closed'}")
+                k, _, v = line.partition(": ")
+                pairs.append((k, v))
+            return pairs
 
     def status(self):
-        return self.mpc("status")
+        return dict(self.cmd("status"))
+
+    def _titles(self, command):
+        return [v for k, v in self.cmd(command) if k == "Title"]
+
+    def queue(self):
+        return self._titles("playlistinfo")
 
     def current(self):
-        return self.mpc("current", "-f", "%title%").strip()
+        return next(iter(self._titles("currentsong")), "")
+
+    def queued(self):
+        """The next song's title, if one is due."""
+        pos = self.status().get("nextsong")
+        return self._titles(f"playlistinfo {pos}")[0] if pos else ""
+
+    def outputs(self):
+        """Output name -> enabled."""
+        out, name = {}, None
+        for k, v in self.cmd("outputs"):
+            if k == "outputname":
+                name = v
+            elif k == "outputenabled":
+                out[name] = v == "1"
+        return out
 
     def reset(self, *folders, play=None):
-        """Empty, plain-mode queue holding `folders` (default: everything)."""
-        for cmd in (["stop"], ["clear"], ["random", "off"], ["repeat", "off"], ["single", "off"],
-                    ["consume", "off"], ["enable", "1"], ["enable", "2"]):
-            self.mpc("-q", *cmd)
-        for f in folders or ["/"]:
-            self.mpc("-q", "add", f)
+        """Empty, plain-mode queue holding `folders` (default: everything);
+        `play` starts the queue's `play`th song (from 1)."""
+        for c in ("stop", "clear", "random 0", "repeat 0", "single 0", "consume 0", "enableoutput 0",
+                  "enableoutput 1"):
+            self.cmd(c)
+        for f in folders or [""]:
+            self.cmd(f'add "{f}"')
         if play is not None:
-            self.mpc("-q", "play", str(play))
+            self.cmd(f"play {play - 1}")
 
     def stop(self):
         self.proc.terminate()

@@ -103,9 +103,9 @@ def test_directories_add_a_folder(mpd, bin):
 
 def test_adding_while_paused_keeps_the_paused_song(mpd, bin):
     mpd.reset(ALPHA, play=1)
-    mpd.mpc("-q", "pause")
+    mpd.cmd("pause 1")
     subprocess.run([bin, "add", str(mpd.lib / BETA)], env=mpd.env, capture_output=True, check=True)
-    assert "[paused]" in mpd.status() and mpd.current() == "Aone", mpd.status()
+    assert mpd.status()["state"] == "pause" and mpd.current() == "Aone", mpd.status()
     mpd.reset(ALPHA)
     subprocess.run([bin, "add", str(mpd.lib / BETA)], env=mpd.env, capture_output=True, check=True)
     assert wait_for(lambda: mpd.current() == "Bone"), "stopped: the first new song starts"
@@ -116,7 +116,7 @@ def test_follow_mode_moves_and_restores(mpd, bin):
     t = Term(bin, mpd)
     t.send("jj")  # browse cursor: Aone -> Athree
     t.send("t", settle=1.0)  # Athree plays next
-    assert mpd.mpc("queued", "-f", "%title%").strip() == "Athree"
+    assert mpd.queued() == "Athree"
     assert mpd.queue() == ["Atwo", "Aone", "Athree"], "the playing song moved before the target"
     assert t.lines().index(next(l for l in t.lines() if "Aone" in l)) < t.lines().index(
         next(l for l in t.lines() if "Atwo" in l)), "the display keeps the real order"
@@ -130,10 +130,10 @@ def test_outputs_panel_toggles(mpd, bin):
     t.send("oo")
     assert t.find("[x]  null"), t.text()
     t.send("\r", settle=1.0)
-    assert "Output 1 (null) is disabled" in mpd.mpc("outputs")
+    assert mpd.outputs()["null"] is False, mpd.outputs()
     assert t.find("[ ]  null"), "the panel shows what MPD did"
     t.quit()
-    mpd.mpc("-q", "enable", "1")
+    mpd.cmd("enableoutput 0")
 
 
 def test_mouse_tabs_and_seek(mpd, bin):
@@ -145,26 +145,24 @@ def test_mouse_tabs_and_seek(mpd, bin):
     x, y = t.find("Queue")
     t.click(x + 1, y)
     t.click(t.cols // 2, 2, settle=1.0)  # the progress bar
-    elapsed = [l for l in mpd.status().splitlines() if "/" in l and "#" in l][0].split()[2].split("/")[0]
-    m, s = map(int, elapsed.split(":"))
-    assert 50 <= m * 60 + s <= 70, f"seeked to {elapsed} of 2:00"
+    elapsed = float(mpd.status()["elapsed"])
+    assert 50 <= elapsed <= 70, f"seeked to {elapsed} s of 120"
     t.quit()
 
 
 def test_mode_toggles_in_the_footer(mpd, bin):
     mpd.reset(ALPHA, play=1)
-    mpd.mpc("repeat", "off")
     t = Term(bin, mpd)
     x, y = t.find("Repeat")
     assert y == t.rows - 1, f"modes sit on the footer row, found on row {y}"
     assert "Repeat" not in t.text().splitlines()[1], "and no longer in the header"
     t.click(x + 1, y)
-    assert wait_for(lambda: "repeat: on" in mpd.status()), "clicking Repeat turns it on"
+    assert wait_for(lambda: mpd.status()["repeat"] == "1"), "clicking Repeat turns it on"
     x, y = t.find("Random")
     t.click(x + 1, y)
-    assert wait_for(lambda: "random: on" in mpd.status()), "clicking Random turns it on"
-    mpd.mpc("repeat", "off")
-    mpd.mpc("random", "off")  # state leaks between tests
+    assert wait_for(lambda: mpd.status()["random"] == "1"), "clicking Random turns it on"
+    mpd.cmd("repeat 0")
+    mpd.cmd("random 0")  # state leaks between tests
     t.quit()
 
 
@@ -194,6 +192,23 @@ def test_cli(mpd, bin):
     assert run("albumart", "-").returncode == 2, "Beta has no cover"
     r = run("update", "--wait")
     assert r.returncode == 0 and b"done" in r.stderr, r.stderr
+
+
+def test_cli_playback_controls(mpd, bin):
+    run = lambda *a: subprocess.run([bin, *a], env=mpd.env, capture_output=True, check=True)
+    mpd.reset(ALPHA)
+    run("toggle")
+    assert mpd.status()["state"] == "play", "toggle plays from stopped"
+    run("next")
+    assert mpd.current() == "Atwo"
+    run("prev")
+    assert mpd.current() == "Aone"
+    run("toggle")
+    assert mpd.status()["state"] == "pause"
+    run("toggle")
+    assert mpd.status()["state"] == "play" and mpd.current() == "Aone", "and resumes where it was"
+    run("clear")
+    assert mpd.queue() == [] and mpd.status()["state"] == "stop"
 
 
 def test_marquee_scrolls_the_highlighted_row(mpd, bin):
@@ -251,7 +266,7 @@ def test_marquee_count_once_stops_at_the_ellipsis(mpd, bin):
     assert "…" in footer(), footer()
     t.pump(1.0)
     assert "…" in footer(), "and it stays"
-    mpd.mpc("-q", "next")  # a new next song: a new pass
+    mpd.cmd("next")  # a new next song: a new pass
     t.pump(0.6)
     assert "…" not in footer() and "Athree" in footer(), footer()
     t.quit()
