@@ -291,6 +291,31 @@ impl Nc {
         unsafe { sys::notcurses_check_pixel_support(self.raw) != sys::ncpixelimpl_e_NCPIXEL_NONE }
     }
 
+    /// Whether the terminal is kitty, running here (not over ssh), so it
+    /// can read images from shared memory.
+    pub fn is_local_kitty(&self) -> bool {
+        // SAFETY: raw is a live notcurses context.
+        let px = unsafe { sys::notcurses_check_pixel_support(self.raw) };
+        let kitty = (sys::ncpixelimpl_e_NCPIXEL_KITTY_STATIC..=sys::ncpixelimpl_e_NCPIXEL_KITTY_SELFREF).contains(&px);
+        kitty && std::env::var_os("SSH_CONNECTION").is_none() && std::env::var_os("SSH_TTY").is_none()
+    }
+
+    /// Draws `v` stretched over the whole of `plane`, in character cells.
+    /// A later blit onto the same plane replaces it.
+    pub fn blit_stretched(&self, v: &Visual, plane: &mut Plane) -> Result<()> {
+        let opts = sys::ncvisual_options {
+            n: plane.raw,
+            scaling: sys::ncscale_e_NCSCALE_STRETCH,
+            blitter: sys::ncblitter_e_NCBLIT_DEFAULT,
+            ..Default::default()
+        };
+        // SAFETY: raw, v and plane are live; opts is valid for the call.
+        if unsafe { sys::ncvisual_blit(self.raw, v.raw, &opts) }.is_null() {
+            bail!("ncvisual_blit failed");
+        }
+        Ok(())
+    }
+
     /// Scales `v` to fit `parent`, centred, in a new child plane: in
     /// pixels, or `half_blocks`, or notcurses' best character cells.
     pub fn blit_into<'a>(&'a self, v: &Visual, parent: &Plane<'a>, blitter: Blitter) -> Result<OwnedPlane<'a>> {

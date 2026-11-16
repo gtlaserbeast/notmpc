@@ -31,6 +31,8 @@ use crate::mpd::State;
 use crate::nc::{self, BOLD, Color, ITALIC, Plane};
 use crate::pixelbar;
 use crate::queue::{Queue, Row};
+use crate::scene::{Look, Mode as SceneMode};
+use crate::viz::Bars;
 
 const FOOTER_ROWS: u32 = 1;
 /// Header rows for the title and artist / album, without the spectrum.
@@ -162,6 +164,8 @@ impl App<'_> {
             self.forget_images();
             self.header_plane = None;
             self.viz_plane = None;
+            self.scene.hide();
+            self.scene_area = None;
             reset(&mut p);
             p.putstr_yx(0, 0, "terminal too small");
             return Ok(());
@@ -201,6 +205,10 @@ impl App<'_> {
                 self.art.show(None)?;
                 self.draw_search(&mut p, body);
             }
+            Tab::Visualizer => {
+                self.art.show(None)?;
+                self.draw_scene_tab(&mut p, body);
+            }
         }
         self.draw_footer(&mut p, rows - 1, cols);
         self.draw_overlay(rows, cols)?;
@@ -234,100 +242,218 @@ impl App<'_> {
         Ok(())
     }
 
-    /// The spectrum, rising from the bottom of the header. `blocks`: a bar
-    /// per column in eighth blocks, full cells drawn as background so text
-    /// over them keeps the colour. `braille`: two bars per column, one per
-    /// dot column, in quarter-cell steps. `octants`: the same two bars in
-    /// solid 2×4 blocks, full cells as background like `blocks`. A bar's colour is the palette's
-    /// gradient across the spectrum, brighter the taller it is. Unless
-    /// `force`, leaves the plane alone (and returns false) when the frame
-    /// would look the same as the last.
+    /// The spectrum, rising from the bottom of the header (or out from its
+    /// middle row, mirrored). `blocks`: a bar per column in eighth blocks,
+    /// full cells drawn as background so text over them keeps the colour.
+    /// `braille`: two bars per column, one per dot column, in quarter-cell
+    /// steps. `octants`: the same two bars in solid 2×4 blocks, full cells
+    /// as background like `blocks`. Peak caps sit a step above each bar. A
+    /// column's colour is the palette's gradient from bass to treble,
+    /// brighter the taller its bar. Unless `force`, leaves the plane alone
+    /// (and returns false) when the frame would look the same as the last.
     fn draw_viz(&mut self, cols: u32, force: bool) -> bool {
         let Some(mut vp) = self.viz_plane.take() else { return false };
         let rows = vp.dim_yx().0;
         let style = self.cfg.visualizer_style;
+        let mirror = self.cfg.visualizer_mirror;
         let (per_col, steps) = if style == VisualizerStyle::Blocks { (1, 8) } else { (2, 4) };
-        // (steps lit, brightness step) per bar: all a frame shows. Four
-        // brightness steps, so a lit cell's colour changes (and is
-        // re-sent) only when its bar crosses one.
-        let bars: Vec<(u32, u8)> = match self.viz.as_mut().filter(|_| self.offline.is_none() && self.viz_on) {
-            Some(viz) => viz
-                .frame((cols * per_col) as usize)
-                .iter()
-                .map(|&b| ((b * (rows * steps) as f32).round() as u32, (b * 4.0).round() as u8))
-                .collect(),
-            None => Vec::new(),
+        let n = (cols * per_col) as usize;
+        let bands = if mirror.horizontal() { n.div_ceil(2) } else { n };
+        match self.viz.as_mut().filter(|_| self.offline.is_none() && self.viz_on) {
+            Some(viz) => {
+                let levels = viz.levels(bands);
+                self.viz_bars.update(&levels);
+            }
+            None => self.viz_bars = Bars::default(),
+        }
+        // the band each bar shows: bass in the middle when mirrored
+        let band = |i: usize| {
+            if !mirror.horizontal() {
+                i
+            } else if i >= n / 2 {
+                i - n / 2
+            } else {
+                (n - 1) / 2 - i
+            }
         };
-        if !force && bars == self.viz_shown {
+        let total = rows * steps;
+        // Per bar: (steps lit, cap step + 1 or 0, brightness step): all a
+        // frame shows. Four brightness steps, so a lit cell's colour
+        // changes (and is re-sent) only when its bar crosses one.
+        let shown: Vec<(u32, u32, u8)> = if self.viz_bars.bars.len() == bands {
+            let span = if mirror.vertical() { total / 2 } else { total };
+            (0..n)
+                .map(|i| {
+                    let (b, p) = (self.viz_bars.bars[band(i)], self.viz_bars.peaks[band(i)]);
+                    let lit = (b * span as f32).round() as u32;
+                    let cap = (p * span as f32).round() as u32;
+                    let cap = if self.cfg.visualizer_peaks && cap > lit { cap } else { 0 };
+                    (lit, cap, (b * 4.0).round() as u8)
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+        if !force && shown == self.viz_shown {
             self.viz_plane = Some(vp);
             return false;
         }
         vp.erase();
+        if shown.is_empty() {
+            self.viz_shown = shown;
+            self.viz_plane = Some(vp);
+            return true;
+        }
         let stops: Vec<u32> =
             self.cfg.theme.visualizer_colors.iter().map(|&c| self.nc.rgb(c).unwrap_or(0x8a8a8a)).collect();
         // Dim enough for the header text on top to stay readable.
-        let colour = |x: u32, level: u8| {
-            Color::Rgb(scale(gradient(&stops, x as f32 / (cols.max(2) - 1) as f32), 0.30 + 0.10 * f32::from(level)))
+        let colour = |t: f32, level: u8| Color::Rgb(scale(gradient(&stops, t), 0.30 + 0.10 * f32::from(level)));
+        // Whether bar `i` covers step `k` (0 at the bottom of the plane).
+        let on = |i: usize, k: u32| {
+            let (lit, cap, _) = shown[i];
+            if mirror.vertical() {
+                let mid = total / 2;
+                let d = if k >= mid { k - mid + 1 } else { mid - k };
+                d <= lit || d == cap
+            } else {
+                k < lit || k + 1 == cap
+            }
         };
-        for (x, col) in bars.chunks(per_col as usize).enumerate() {
-            let x = x as u32;
-            let (lit, level) = col.iter().fold((0, 0), |(l, v), &(n, b)| (l.max(n), v.max(b)));
-            if lit == 0 {
+        let bands_max = (bands.max(2) - 1) as f32;
+        for x in 0..cols {
+            let first = (x * per_col) as usize;
+            let col = &shown[first..(first + per_col as usize).min(shown.len())];
+            if col.iter().all(|&(lit, cap, _)| lit == 0 && cap == 0) {
                 continue;
             }
-            vp.set_fg(colour(x, level));
+            let level = col.iter().map(|c| c.2).max().unwrap_or(0);
+            let t =
+                if mirror.horizontal() { band(first) as f32 / bands_max } else { x as f32 / (cols.max(2) - 1) as f32 };
+            let fg = colour(t, level);
             for r in 0..rows {
                 let y = rows - 1 - r;
-                let fill = |n: u32| n.saturating_sub(r * steps).min(steps) as usize;
-                if style != VisualizerStyle::Blocks {
-                    let (l, rt) = (fill(col[0].0), fill(col.get(1).map_or(0, |c| c.0)));
-                    if l == 0 && rt == 0 {
-                        break;
-                    }
-                    if style == VisualizerStyle::Octants && l == 4 && rt == 4 {
-                        vp.set_bg(colour(x, level));
-                        vp.putstr_yx(y, x, " ");
-                        continue;
-                    }
-                    let ch = if style == VisualizerStyle::Braille {
-                        // dots filled from the bottom of the cell: left column, right column
-                        const LEFT: [u32; 5] = [0, 0x40, 0x44, 0x46, 0x47];
-                        const RIGHT: [u32; 5] = [0, 0x80, 0xa0, 0xb0, 0xb8];
-                        char::from_u32(0x2800 + (LEFT[l] | RIGHT[rt])).unwrap_or(' ')
-                    } else {
-                        OCTANT_BARS[l][rt]
-                    };
-                    vp.set_bg(Color::Default);
-                    vp.set_bg_transparent();
-                    vp.putstr_yx(y, x, ch.encode_utf8(&mut [0; 4]));
-                } else {
-                    const PARTIAL: [&str; 8] = [" ", "▁", "▂", "▃", "▄", "▅", "▆", "▇"];
-                    match fill(lit) {
-                        0 => break,
-                        8 => {
-                            vp.set_bg(colour(x, level));
+                if style == VisualizerStyle::Blocks {
+                    let mask = (0..8).fold(0u32, |m, d| m | (u32::from(on(first, r * 8 + d)) << d));
+                    match mask {
+                        0 => continue,
+                        0xff => {
+                            vp.set_bg(fg);
                             vp.putstr_yx(y, x, " ");
+                            continue;
                         }
-                        f => {
+                        m => {
+                            vp.set_fg(fg);
                             vp.set_bg(Color::Default);
                             vp.set_bg_transparent();
-                            vp.putstr_yx(y, x, PARTIAL[f]);
+                            vp.putstr_yx(y, x, block_char(m as u8));
+                        }
+                    }
+                    continue;
+                }
+                // octant numbering: rows top to bottom, left then right
+                let mut mask = 0u32;
+                for c in 0..col.len() {
+                    for d in 0..4 {
+                        if on(first + c, r * 4 + d) {
+                            mask |= 1 << ((3 - d) * 2 + c as u32);
                         }
                     }
                 }
+                if mask == 0 {
+                    continue;
+                }
+                if style == VisualizerStyle::Octants && mask == 0xff {
+                    vp.set_bg(fg);
+                    vp.putstr_yx(y, x, " ");
+                    continue;
+                }
+                let ch = if style == VisualizerStyle::Braille { braille_char(mask as u8) } else { octant(mask as u8) };
+                vp.set_fg(fg);
+                vp.set_bg(Color::Default);
+                vp.set_bg_transparent();
+                vp.putstr_yx(y, x, ch.encode_utf8(&mut [0; 4]));
             }
         }
-        self.viz_shown = bars;
+        self.viz_shown = shown;
         self.viz_plane = Some(vp);
         true
     }
 
-    /// Just the next visualizer frame, for when nothing else on screen
-    /// has changed since the last `draw`; false if it looks the same.
+    /// Just the next visualizer frames (header and tab), for when nothing
+    /// else on screen has changed since the last `draw`; false if they
+    /// look the same.
     pub fn draw_viz_only(&mut self) -> bool {
-        match self.viz_plane.as_ref().map(|p| p.dim_yx().1) {
+        let header = match self.viz_plane.as_ref().map(|p| p.dim_yx().1) {
             Some(cols) => self.draw_viz(cols, false),
             None => false,
+        };
+        self.draw_scene() || header
+    }
+
+    /// The Visualizer tab: a row of mode buttons and the colour switch,
+    /// then the picture.
+    fn draw_scene_tab(&mut self, p: &mut Plane, body: Rect) {
+        let t = &self.cfg.theme;
+        let mut x = body.x + 1;
+        for mode in SceneMode::ALL {
+            let label = format!(" {} ", mode.name());
+            let style = if mode == self.scene.mode { t.tab_active } else { t.tab_inactive };
+            let end = put(p, body.y, x, &label, style);
+            self.hit(body.y, x, end - x, Target::SceneMode(mode));
+            x = end + 1;
+        }
+        let colors = if self.scene.cover_colors { "colours: cover" } else { "colours: theme" };
+        let hint = "h/l mode · space colours ";
+        let right = body.x + body.cols;
+        let cw = nc::width(colors) as u32 + 2;
+        if x + cw < right {
+            let cx = right - cw - 1;
+            let style = if self.scene.cover_colors && !self.scene.has_cover_palette() { t.dim } else { t.label };
+            put(p, body.y, cx + 1, colors, style);
+            self.hit(body.y, cx, cw, Target::SceneColors);
+            let hw = nc::width(hint) as u32;
+            if x + hw + cw + 2 <= right {
+                put(p, body.y, cx - hw, hint, t.dim);
+            }
+        }
+        reset(p);
+        // one blank row under the buttons
+        let area = Rect { y: body.y + 2, x: body.x, rows: body.rows.saturating_sub(2), cols: body.cols };
+        if area.rows < 2 || self.overlay.is_some() {
+            self.scene.hide();
+            self.scene_area = None;
+            return;
+        }
+        self.scene_area = Some(area);
+        let song = self.song.as_ref().map(|(s, _)| s.file.clone());
+        if let Some(uri) = song.filter(|u| self.scene.cover_key() != Some(u.as_str())) {
+            let data = self.conn.picture(&uri).ok().flatten();
+            self.scene.set_cover(&uri, data.as_deref());
+        }
+        self.draw_scene();
+    }
+
+    /// The tab's next frame, where `draw_scene_tab` last put it; whether
+    /// the screen changed.
+    fn draw_scene(&mut self) -> bool {
+        let (Some(area), Some(viz)) = (self.scene_area.filter(|_| self.tab == Tab::Visualizer), self.viz.as_mut())
+        else {
+            return false;
+        };
+        let colors: Vec<u32> =
+            self.cfg.theme.visualizer_colors.iter().map(|&c| self.nc.rgb(c).unwrap_or(0x8a8a8a)).collect();
+        let look = Look {
+            colors: &colors,
+            mirror: self.cfg.visualizer_mirror,
+            peaks: self.cfg.visualizer_peaks,
+            fps: self.cfg.visualizer_fps,
+        };
+        match self.scene.draw(viz, area, &look) {
+            Ok(changed) => changed,
+            Err(e) => {
+                self.say(format!("visualizer: {e:#}; drawing in characters instead"));
+                true
+            }
         }
     }
 
@@ -1242,7 +1368,7 @@ impl App<'_> {
 }
 
 /// The colour at `t` (0..1) along evenly spaced RGB stops.
-fn gradient(stops: &[u32], t: f32) -> u32 {
+pub(crate) fn gradient(stops: &[u32], t: f32) -> u32 {
     let t = t.clamp(0.0, 1.0) * (stops.len() - 1) as f32;
     let i = (t as usize).min(stops.len().saturating_sub(2));
     let (a, b) = (stops[i], *stops.get(i + 1).unwrap_or(&stops[i]));
@@ -1255,7 +1381,7 @@ fn gradient(stops: &[u32], t: f32) -> u32 {
 }
 
 /// Scales an RGB colour's brightness.
-fn scale(rgb: u32, k: f32) -> u32 {
+pub(crate) fn scale(rgb: u32, k: f32) -> u32 {
     let ch = |shift: u32| ((((rgb >> shift) & 0xff) as f32 * k).round().min(255.0) as u32) << shift;
     ch(16) | ch(8) | ch(0)
 }
@@ -1268,21 +1394,71 @@ impl App<'_> {
     }
 }
 
-/// One cell of two bars side by side, `[left][right]`, each 0-4 quarters
-/// tall from the bottom: Unicode 16 octants, or the older block or
-/// quadrant character where Unicode already had that shape.
-const OCTANT_BARS: [[char; 5]; 5] = [
-    // left 0: nothing, right ⅛ (U+1CEA0), ▗, octant-468, ▐
-    [' ', '\u{1cea0}', '\u{2597}', '\u{1cd96}', '\u{2590}'],
-    // left ¼ (U+1CEA3), ▂, octant-678, octant-4678, octant-24678
-    ['\u{1cea3}', '\u{2582}', '\u{1cdcb}', '\u{1cdd3}', '\u{1cdd5}'],
-    // ▖, octant-578, ▄, octant-45678, ▟
-    ['\u{2596}', '\u{1cdbb}', '\u{2584}', '\u{1cde1}', '\u{259f}'],
-    // octant-357, octant-3578, octant-35678, ▆, octant-2345678
-    ['\u{1cd48}', '\u{1cdbf}', '\u{1cdde}', '\u{2586}', '\u{1cde5}'],
-    // ▌, octant-13578, ▙, octant-1345678, █ (drawn as background)
-    ['\u{258c}', '\u{1cdc0}', '\u{2599}', '\u{1cde4}', '\u{2588}'],
-];
+/// The 2×4 block character for an octant mask (bit `row * 2 + col`, rows
+/// top to bottom): Unicode 16's octants, or the older block character
+/// that already draws that shape.
+fn octant(mask: u8) -> char {
+    // Masks drawn by older characters, in order: Unicode 16 numbers the
+    // remaining 230 shapes in mask order from U+1CD00.
+    const OLDER: [(u8, char); 26] = [
+        (0, ' '),
+        (1, '\u{1cea8}'),
+        (2, '\u{1ceab}'),
+        (3, '\u{1fb82}'),
+        (5, '▘'),
+        (10, '▝'),
+        (15, '▀'),
+        (20, '\u{1fbe6}'),
+        (40, '\u{1fbe7}'),
+        (63, '\u{1fb85}'),
+        (64, '\u{1cea3}'),
+        (80, '▖'),
+        (85, '▌'),
+        (90, '▞'),
+        (95, '▛'),
+        (128, '\u{1cea0}'),
+        (160, '▗'),
+        (165, '▚'),
+        (170, '▐'),
+        (175, '▜'),
+        (192, '▂'),
+        (240, '▄'),
+        (245, '▙'),
+        (250, '▟'),
+        (252, '▆'),
+        (255, '█'),
+    ];
+    match OLDER.binary_search_by_key(&mask, |o| o.0) {
+        Ok(i) => OLDER[i].1,
+        Err(below) => char::from_u32(0x1cd00 + u32::from(mask) - below as u32).unwrap_or(' '),
+    }
+}
+
+/// The braille character for the same mask as `octant`.
+fn braille_char(mask: u8) -> char {
+    // braille dot bits by (row, col)
+    const DOT: [[u32; 2]; 4] = [[0x01, 0x08], [0x02, 0x10], [0x04, 0x20], [0x40, 0x80]];
+    let bits = (0..8).filter(|b| mask & (1 << b) != 0).fold(0, |acc, b| acc | DOT[b / 2][b % 2]);
+    char::from_u32(0x2800 + bits).unwrap_or(' ')
+}
+
+/// An eighth-block column (bit `d` = the `d`th eighth from the bottom) as
+/// one character: a lower block when it starts at the bottom, an upper one
+/// when it reaches the top; a lone cap in the middle goes to the nearer edge.
+fn block_char(mask: u8) -> &'static str {
+    const LOWER: [&str; 8] = [" ", "▁", "▂", "▃", "▄", "▅", "▆", "▇"];
+    const UPPER: [&str; 8] = [" ", "▔", "\u{1fb82}", "\u{1fb83}", "▀", "\u{1fb84}", "\u{1fb85}", "\u{1fb86}"];
+    let (low, high) = (mask.trailing_ones() as usize, mask.leading_ones() as usize);
+    if low > 0 {
+        LOWER[low.min(7)]
+    } else if high > 0 {
+        UPPER[high.min(7)]
+    } else if mask.trailing_zeros() < 4 {
+        LOWER[1]
+    } else {
+        UPPER[1]
+    }
+}
 
 /// How a queue row is highlighted: the highlight (`primary`) replaces the
 /// row's colours; the browse cursor only tints the background.
@@ -1324,4 +1500,37 @@ fn put_centered(p: &mut Plane, y: u32, x: u32, w: u32, s: &str, style: Style) {
     let s = nc::fit(s, w as usize);
     let off = w.saturating_sub(nc::width(&s) as u32) / 2;
     put(p, y, x + off, &s, style);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn octants_match_unicode() {
+        // octant-468 (bits 3, 5, 7), octant-2345678, and older characters
+        assert_eq!(octant(0b1010_1000), '\u{1cd96}');
+        assert_eq!(octant(0b1111_1110), '\u{1cde5}');
+        assert_eq!(octant(4), '\u{1cd00}', "octant-3, the first new shape");
+        assert_eq!(octant(0b1111_0000), '▄');
+        assert_eq!(octant(0b1100_0000), '▂');
+        // every mask has a distinct character
+        let all: std::collections::HashSet<char> = (0..=255).map(octant).collect();
+        assert_eq!(all.len(), 256);
+    }
+
+    #[test]
+    fn braille_follows_the_same_mask() {
+        assert_eq!(braille_char(0b1100_0000), '⣀');
+        assert_eq!(braille_char(0b0000_0001), '⠁');
+        assert_eq!(braille_char(0xff), '⣿');
+    }
+
+    #[test]
+    fn block_columns() {
+        assert_eq!(block_char(0b0000_0111), "▃");
+        assert_eq!(block_char(0b1100_0000), "\u{1fb82}", "upper quarter, mirrored bars going down");
+        assert_eq!(block_char(0b0000_1000), "▁", "a cap low in the cell");
+        assert_eq!(block_char(0b0010_0000), "▔", "a cap high in the cell");
+    }
 }

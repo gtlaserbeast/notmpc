@@ -19,8 +19,9 @@ use crate::nc::{Input, Mouse, Nc, OwnedPlane};
 use crate::overlay::Overlay;
 use crate::pixelbar::PixelBar;
 use crate::queue::{Displaced, Queue, Row};
+use crate::scene::{Mode as SceneMode, Scene};
 use crate::search::{Edit, Search};
-use crate::viz::Visualizer;
+use crate::viz::{Bars, Visualizer};
 
 /// Idle subsystems that mean the queue changed / status may have changed.
 const QUEUE_EVENTS: &[&str] = &["playlist"];
@@ -41,9 +42,15 @@ pub enum Tab {
     Queue,
     Directories,
     Search,
+    Visualizer,
 }
 
-pub const TABS: [(Tab, &str); 3] = [(Tab::Queue, "Queue"), (Tab::Directories, "Directories"), (Tab::Search, "Search")];
+pub const TABS: [(Tab, &str); 4] = [
+    (Tab::Queue, "Queue"),
+    (Tab::Directories, "Directories"),
+    (Tab::Search, "Search"),
+    (Tab::Visualizer, "Visualizer"),
+];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Mode {
@@ -80,6 +87,9 @@ pub enum Target {
     OverlayLine(usize),
     /// A Directories entry: column (0 parent, 1 current, 2 preview), index.
     Entry(u8, usize),
+    /// The Visualizer tab's mode buttons and colour switch.
+    SceneMode(SceneMode),
+    SceneColors,
 }
 
 /// A clickable region recorded while drawing: `w` cells from (y, x).
@@ -143,10 +153,15 @@ pub struct App<'nc> {
     /// The spectrum's plane and the header's above it; see `layer_header`.
     pub(crate) header_plane: Option<OwnedPlane<'nc>>,
     pub(crate) viz_plane: Option<OwnedPlane<'nc>>,
-    /// Each bar's (steps lit, brightness step) as last drawn.
-    pub(crate) viz_shown: Vec<(u32, u8)>,
+    /// The header spectrum's bars, and each one's (steps lit, cap, brightness
+    /// step) as last drawn.
+    pub(crate) viz_bars: Bars,
+    pub(crate) viz_shown: Vec<(u32, u32, u8)>,
     /// Scrolls too-long text on highlighted rows.
     pub(crate) marquee: Marquee,
+    /// The Visualizer tab's picture, and where it goes.
+    pub(crate) scene: Scene<'nc>,
+    pub(crate) scene_area: Option<crate::art::Rect>,
 }
 
 impl<'nc> App<'nc> {
@@ -154,8 +169,13 @@ impl<'nc> App<'nc> {
         let pixel_bar = if cfg.progress_bar == ProgressBar::Pixel { PixelBar::new(nc) } else { None };
         let marquee = Marquee::new(cfg.marquee_speed, cfg.marquee_count.0);
         let art_style = cfg.art_style;
+        let state = crate::config::State::load();
+        let scene_mode = state.scene.as_deref().and_then(SceneMode::from_name).unwrap_or(SceneMode::Spectrum);
+        let scene = Scene::new(nc, scene_mode, state.scene_cover_colors.unwrap_or(false));
         let mut app = Self {
             nc,
+            scene,
+            scene_area: None,
             marquee,
             queue: Queue::new(cfg.group_by_album),
             follow: cfg.follow_cursor,
@@ -186,11 +206,12 @@ impl<'nc> App<'nc> {
             viz_on: false,
             header_plane: None,
             viz_plane: None,
+            viz_bars: Bars::default(),
             viz_shown: Vec::new(),
         };
         if app.cfg.visualizer {
-            app.viz = Some(Visualizer::new(app.cfg.visualizer_fifo.clone(), app.cfg.visualizer_delay()));
             app.viz_on = true;
+            app.listen();
         }
         app.update(ALL_EVENTS)?;
         if let Some(cur) = app.current_pos() {
@@ -212,6 +233,21 @@ impl<'nc> App<'nc> {
         if let Some(bar) = self.pixel_bar.as_mut() {
             bar.hide();
         }
+        self.scene.forget();
+    }
+
+    /// Reads MPD's FIFO while the header spectrum or the Visualizer tab
+    /// shows, and not otherwise. The reader starts on first need and
+    /// stays for the session (two would split the FIFO's data).
+    pub(crate) fn listen(&mut self) {
+        let want = self.viz_on || self.tab == Tab::Visualizer;
+        match &self.viz {
+            Some(viz) => viz.set_reading(want),
+            None if want => {
+                self.viz = Some(Visualizer::new(self.cfg.visualizer_fifo.clone(), self.cfg.visualizer_delay()));
+            }
+            None => {}
+        }
     }
 
     /// How long the main loop may wait for input: until the screen next
@@ -222,7 +258,9 @@ impl<'nc> App<'nc> {
         // wake just after a deadline, not just before it
         const MARGIN: Duration = Duration::from_millis(2);
         let mut wait = Duration::from_secs(1);
-        if self.viz_on && self.viz.as_ref().is_some_and(Visualizer::active) {
+        let live = self.viz.as_ref().is_some_and(Visualizer::live);
+        let scene = self.tab == Tab::Visualizer && self.overlay.is_none() && self.scene.moving(live);
+        if (self.viz_on && (live || self.viz_bars.moving())) || scene {
             wait = wait.min(Duration::from_secs(1) / self.cfg.visualizer_fps);
         }
         if let Some(step) = self.marquee.next_step() {
@@ -508,6 +546,7 @@ impl<'nc> App<'nc> {
             // While typing a query only global keys apply (Tab, ...).
             Tab::Search if self.search.editing => Ctx::Global,
             Tab::Search => Ctx::List,
+            Tab::Visualizer => Ctx::List,
         };
         self.pending.push(input);
         let action = match self.cfg.keys.lookup(ctx, &self.pending) {
@@ -589,6 +628,7 @@ impl<'nc> App<'nc> {
                 Some(Entry::Song(s, _)) => Some(s.file.clone()),
                 _ => None,
             },
+            Tab::Visualizer => self.song.as_ref().map(|(s, _)| s.file.clone()),
         }
     }
 
@@ -622,6 +662,9 @@ impl<'nc> App<'nc> {
             _ => {}
         }
         if self.tab == Tab::Directories && self.act_dirs(&action)? {
+            return Ok(true);
+        }
+        if self.tab == Tab::Visualizer && self.act_scene(&action) {
             return Ok(true);
         }
         if self.tab == Tab::Search && self.act_search(&action)? {
@@ -665,22 +708,15 @@ impl<'nc> App<'nc> {
             ToggleSingle => self.mpd(&format!("single {}", u8::from(!s.single)))?,
             ToggleConsume => self.mpd(&format!("consume {}", u8::from(!s.consume)))?,
             ToggleVisualizer => {
-                // One reader for the session (two would split the FIFO's
-                // data); it pauses while the visualizer is off.
                 self.viz_on = !self.viz_on;
-                match &self.viz {
-                    Some(viz) => viz.set_reading(self.viz_on),
-                    None if self.viz_on => {
-                        self.viz = Some(Visualizer::new(self.cfg.visualizer_fifo.clone(), self.cfg.visualizer_delay()));
-                    }
-                    None => {}
-                }
+                self.listen();
                 let on = self.viz_on;
                 let saved = crate::config::State::update(|s| s.visualizer = Some(on));
                 self.say(format!("visualizer {}{saved}", if on { "on" } else { "off" }));
             }
             VisualizerDelayDown | VisualizerDelayUp => {
-                let Some(viz) = self.viz.as_mut().filter(|_| self.viz_on) else {
+                let showing = self.viz_on || self.tab == Tab::Visualizer;
+                let Some(viz) = self.viz.as_mut().filter(|_| showing) else {
                     self.say("the visualizer is off");
                     return Ok(true);
                 };
@@ -794,7 +830,11 @@ impl<'nc> App<'nc> {
     }
 
     fn set_tab(&mut self, tab: Tab) -> Result<()> {
+        if self.tab == Tab::Visualizer && tab != Tab::Visualizer {
+            self.scene.hide();
+        }
         self.tab = tab;
+        self.listen();
         // Arriving at an empty search: start typing straight away.
         if tab == Tab::Search && self.search.is_empty_query() {
             self.search.editing = true;
@@ -803,6 +843,32 @@ impl<'nc> App<'nc> {
             self.browser.open_root(&mut self.conn)?;
         }
         Ok(())
+    }
+
+    /// Visualizer-tab actions: left and right change the mode, select or
+    /// confirm switch the colours. Returns false for the rest.
+    fn act_scene(&mut self, action: &Action) -> bool {
+        match action {
+            Action::Left | Action::Right => {
+                let mode = self.scene.mode.step(if *action == Action::Left { -1 } else { 1 });
+                self.set_scene_mode(mode);
+            }
+            Action::Select | Action::Confirm => self.toggle_scene_colors(),
+            _ => return false,
+        }
+        true
+    }
+
+    pub(crate) fn set_scene_mode(&mut self, mode: SceneMode) {
+        self.scene.set_mode(mode);
+        let _ = crate::config::State::update(|s| s.scene = Some(mode.name().to_owned()));
+    }
+
+    pub(crate) fn toggle_scene_colors(&mut self) {
+        let on = !self.scene.cover_colors;
+        self.scene.set_cover_colors(on);
+        let saved = crate::config::State::update(|s| s.scene_cover_colors = Some(on));
+        self.say(format!("visualizer colours from the {}{saved}", if on { "cover" } else { "theme" }));
     }
 
     /// Directories-tab actions. Returns false for ones it doesn't handle
@@ -965,6 +1031,7 @@ impl<'nc> App<'nc> {
                 // Lists scroll the view; the cursor stays put.
                 Tab::Search => self.search.results.scroll_by(wheel, h),
                 Tab::Queue => self.queue.scroll_by(wheel, h),
+                Tab::Visualizer => {}
             }
             return Ok(());
         }
@@ -995,6 +1062,8 @@ impl<'nc> App<'nc> {
             }
             Some((_, Target::Caret(List::Search, g))) => self.search.results.toggle_collapsed(g),
             Some((_, Target::Tab(t))) => self.set_tab(t)?,
+            Some((_, Target::SceneMode(m))) => self.set_scene_mode(m),
+            Some((_, Target::SceneColors)) => self.toggle_scene_colors(),
             Some((_, Target::FoldAll)) => {
                 let all = self.queue.groups.iter().all(|g| self.queue.collapsed.contains(&g.key));
                 self.queue.set_all_collapsed(!all);

@@ -135,6 +135,9 @@ impl Default for Theme {
 pub struct State {
     pub visualizer_delay_ms: Option<u64>,
     pub visualizer: Option<bool>,
+    /// The Visualizer tab's mode (its name) and colour source.
+    pub scene: Option<String>,
+    pub scene_cover_colors: Option<bool>,
 }
 
 impl State {
@@ -236,6 +239,28 @@ pub enum VisualizerStyle {
     Octants,
 }
 
+/// Which way the header spectrum is mirrored.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum VisualizerMirror {
+    Off,
+    /// Bars grow up and down from the middle row.
+    Vertical,
+    /// Bass in the middle, treble out at both edges.
+    Horizontal,
+    Both,
+}
+
+impl VisualizerMirror {
+    pub fn vertical(self) -> bool {
+        matches!(self, Self::Vertical | Self::Both)
+    }
+
+    pub fn horizontal(self) -> bool {
+        matches!(self, Self::Horizontal | Self::Both)
+    }
+}
+
 /// Whether `name` is a top-level config key: parsing it alone fails on its
 /// value, not as an unknown field.
 fn is_setting(name: &str) -> bool {
@@ -267,6 +292,9 @@ pub struct Config {
     pub visualizer_rows: u32,
     pub visualizer_fps: u32,
     pub visualizer_style: VisualizerStyle,
+    /// A cap over each bar that marks its recent peak and falls slowly.
+    pub visualizer_peaks: bool,
+    pub visualizer_mirror: VisualizerMirror,
     /// How far the speakers lag MPD's FIFO (PipeWire buffering). Tuned
     /// live with [ and ], which saves it to the state file.
     pub visualizer_delay_ms: u64,
@@ -304,6 +332,8 @@ impl Default for Config {
             visualizer_rows: 6,
             visualizer_fps: 20,
             visualizer_style: VisualizerStyle::Braille,
+            visualizer_peaks: true,
+            visualizer_mirror: VisualizerMirror::Off,
             visualizer_delay_ms: 150,
             marquee_speed: 8,
             marquee_count: MarqueeCount(Some(1)),

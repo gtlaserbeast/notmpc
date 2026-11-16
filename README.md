@@ -2,8 +2,8 @@
 
 A terminal MPD client drawn with [notcurses](https://notcurses.com): album
 art in pixel graphics (kitty, sixel; character cells elsewhere), a braille
-spectrum visualizer behind the header and a braille progress bar, and
-rmpc's keys.
+spectrum visualizer behind the header and a braille progress bar, a
+visualizer tab (spectrum, goniometer, spectrogram, radial), and rmpc's keys.
 
 ![notmpc in kitty: the queue grouped by album, the cover at full height,
 the spectrum behind the header](docs/screenshot.webp)
@@ -154,6 +154,38 @@ which colours whole cells (twice the bytes, the same CPU). It idles when
 nothing plays. `V` hides / shows it
 (saved); `visualizer = false` in the config turns it off from the start.
 
+Each bar has a **peak cap**: a mark at its recent peak that holds for half
+a second, then falls slowly (`visualizer_peaks = false` drops them).
+`visualizer_mirror` mirrors the bars: `"vertical"` grows them up and down
+from the middle row, `"horizontal"` puts the bass in the middle with the
+treble out at both edges, `"both"` does both (default `"off"`).
+
+## Visualizer tab
+
+Tab 4 is a visualizer filling the window, in pixels. The buttons along its
+top pick a mode (or `h` / `l`):
+
+- **Spectrum**: the bars full size, with peak caps (and `visualizer_mirror`).
+- **Scope**: a goniometer. Left is plotted against right, turned so mono is
+  a vertical line and wide stereo spreads sideways; the trace fades like a
+  phosphor screen.
+- **Waterfall**: a spectrogram scrolling right to left, about 12 s across,
+  bass at the bottom, loudness as colour.
+- **Radial**: the spectrum bent round a circle, bass at the top, with the
+  album cover in the middle pulsing to the bass.
+
+The colours are `visualizer_colors`, or, with **colours: cover** (click it,
+or `Space`), the cover's own main colours. The mode and colour choice are
+saved to the state file.
+
+In kitty, each frame is drawn small (at most 360,000 pixels) and handed to
+kitty through POSIX shared memory: only the object's name goes down the
+terminal, and kitty scales the picture to the window on the GPU. That keeps
+the tab at about 2-3% of one core in a 180×50 window. Elsewhere (sixel
+terminals, ssh, tmux) notcurses draws it in character cells. The tab reads
+the FIFO only while it's showing, even with `V` off, and keeps nothing once
+you leave it.
+
 **Delay.** MPD writes the FIFO as it plays, but PipeWire buffers before the
 speakers, so the bars would run ahead. notmpc timestamps the audio and
 draws what arrived `visualizer_delay_ms` ago (default 150). Tune it by ear
@@ -222,11 +254,12 @@ unbound, as are rmpc's volume keys (`.` / `,`; bind `VolumeUp` /
 `VolumeDown` yourself if you want them). `/` jumps to Search from the other tabs. notmpc adds
 `t` (play next), `F` (follow the highlight), `V` (visualizer on/off), `[` /
 `]` (visualizer delay), `H`/`L` (collapse/expand all albums), `h`/`l` on the
-queue (collapse/expand the album under the cursor), Home/End, and Del.
+queue (collapse/expand the album under the cursor), Home/End, Del, and the
+Visualizer tab on 4 (`h` / `l` change its mode, `Space` its colours).
 
 | key                          | action                                     |
 |------------------------------|--------------------------------------------|
-| 1 / 2 / 3, Tab / S-Tab, gt/gT | Queue / Directories / Search, cycle tabs  |
+| 1 / 2 / 3 / 4, Tab / S-Tab, gt/gT | Queue / Directories / Search / Visualizer, cycle tabs |
 | p / s                        | play-pause / stop                          |
 | > / <                        | next / previous                            |
 | f / b                        | seek ±5s                                   |
@@ -287,6 +320,9 @@ in italics.
 - `src/main.rs` runs the loop. It sleeps until something on screen is due
   to change (the clock's next second, a visualizer frame, a pending search),
   and visualizer-only frames redraw just the visualizer.
+- `src/viz.rs` reads MPD's FIFO and analyses it; `src/scene.rs` draws the
+  Visualizer tab's modes into an RGBA canvas, which `src/kitty.rs` hands to
+  kitty through shared memory.
 - `src/config.rs` / `src/keys.rs`: config file, theme, rmpc-style keymap.
 - `src/meta.rs`: display metadata, inferred from the path for untagged files.
 - `src/app.rs` holds state and actions, `src/ui.rs` draws; `src/overlay.rs`

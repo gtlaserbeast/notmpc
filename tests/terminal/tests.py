@@ -284,3 +284,66 @@ def test_mouse_leaving_upwards_is_not_typed(mpd, bin):
     t.send("[", settle=0.8)  # the same characters, one key at a time, still act
     assert t.find("the visualizer is"), t.text()
     t.quit()
+
+
+def _state(mpd):
+    p = Path(mpd.env["XDG_STATE_HOME"]) / "notmpc/state.toml"
+    return p.read_text() if p.exists() else ""
+
+
+def test_visualizer_tab_modes_and_idle_cost(mpd, bin):
+    mpd.reset(ALPHA, play=1)
+    t = Term(bin, mpd)  # header spectrum off
+    reading = lambda: any("visualizer.fifo" in f for f in t.fds())
+    t.pump(1.0)
+    assert not reading()
+    t.send("4", settle=1.0)
+    assert t.find(" Spectrum ") and t.find(" Radial "), t.text()
+    assert wait_for(reading, 3), "the tab reads the FIFO"
+    t.send("l")
+    assert 'scene = "Scope"' in _state(mpd), _state(mpd)
+    x, y = t.find(" Waterfall ")
+    t.click(x + 2, y)
+    assert 'scene = "Waterfall"' in _state(mpd), _state(mpd)
+    t.send(" ")
+    assert t.find("colours: cover") and "scene_cover_colors = true" in _state(mpd), t.text()
+    t.send("1", settle=1.0)
+    assert wait_for(lambda: not reading(), 3), "closed again on another tab"
+    before = t.wakeups()
+    t.pump(3.0)
+    assert t.wakeups() - before < 40, f"{t.wakeups() - before} wakeups in 3 s on the queue tab"
+    t.quit()
+
+
+def test_visualizer_tab_frames_go_through_shared_memory_in_kitty(mpd, bin):
+    import base64
+    import re as re_
+    import time
+
+    frame = re_.compile(rb"\x1b_Ga=T,([^;]*);([A-Za-z0-9+/=]+)\x1b\\")
+    mpd.reset(ALPHA, play=1)
+    t = Term(bin, mpd, kitty=True, graphics=True)
+    start = len(t.out)
+    t.send(b"4", settle=0)
+    # act as kitty: read each frame's pixels from shared memory, unlink it
+    seen, sizes_ok, end = set(), True, time.time() + 2.0
+    while time.time() < end:
+        t.pump(0.03)
+        for args, b64 in frame.findall(bytes(t.out[start:])):
+            if b64 in seen:
+                continue
+            seen.add(b64)
+            keys = dict(kv.split(b"=") for kv in args.split(b","))
+            assert keys[b"t"] == b"s" and keys[b"z"] == b"-1", keys
+            shm = Path("/dev/shm", base64.b64decode(b64).decode().lstrip("/"))
+            if shm.exists():
+                sizes_ok &= shm.stat().st_size == int(keys[b"s"]) * int(keys[b"v"]) * 4
+                shm.unlink()
+    assert len(seen) >= 2 and sizes_ok, (len(seen), sizes_ok)
+    assert b"drawing in characters" not in bytes(t.out[start:]), "kept to kitty"
+    mark = len(t.out)
+    t.send(b"1", settle=0.8)
+    assert b"a=d,d=I" in bytes(t.out[mark:]), "leaving the tab deletes the image"
+    t.quit()
+    left = list(Path("/dev/shm").glob(f"notmpc-{t.pid}-*"))
+    assert not left, left

@@ -1,9 +1,9 @@
 //! Spectrum analyser over MPD's `fifo` output (44100:16:2 PCM).
 //!
 //! A reader thread keeps the latest samples; each frame takes a windowed
-//! FFT and folds it into one log-spaced band per column (40 Hz–16 kHz),
-//! with a tilt so treble isn't dwarfed by bass, fast attack, and slow
-//! fall. When the FIFO goes quiet (pause, stop) the bars fall to rest.
+//! FFT and folds it into log-spaced bands (40 Hz–16 kHz), with a tilt so
+//! treble isn't dwarfed by bass; `Bars` gives them fast attack, slow fall
+//! and peak caps. When the FIFO goes quiet (pause, stop) they fall to rest.
 //!
 //! MPD writes the FIFO as it plays, but PipeWire's buffering means the
 //! speakers lag behind it, so samples are timestamped on arrival and each
@@ -39,8 +39,8 @@ const STALE: Duration = Duration::from_millis(150);
 const KEEP: usize = 3 * RATE as usize;
 
 struct Shared {
-    /// Recent mono samples, oldest first.
-    samples: VecDeque<f32>,
+    /// Recent stereo samples (left, right), oldest first.
+    samples: VecDeque<[f32; 2]>,
     /// Samples ever received; `samples.back()` is number `written - 1`.
     written: u64,
     /// (arrival time, `written` after that read), oldest first.
@@ -69,8 +69,10 @@ pub struct Visualizer {
     fft: Arc<dyn Fft<f32>>,
     window: Vec<f32>,
     buf: Vec<Complex<f32>>,
-    bars: Vec<f32>,
-    last_frame: Instant,
+    /// The latest spectrum (magnitude per bin), and when it was taken:
+    /// everything drawn in one frame shares it.
+    mag: Vec<f32>,
+    mag_at: Option<Instant>,
 }
 
 impl Visualizer {
@@ -93,8 +95,8 @@ impl Visualizer {
             fft: FftPlanner::new().plan_fft_forward(FFT_SIZE),
             window,
             buf: vec![Complex::default(); FFT_SIZE],
-            bars: Vec::new(),
-            last_frame: Instant::now(),
+            mag: vec![0.0; FFT_SIZE / 2],
+            mag_at: None,
         }
     }
 
@@ -102,15 +104,9 @@ impl Visualizer {
     /// file open and doesn't wake (MPD keeps a reader of its own, so its
     /// output never blocks).
     pub fn set_reading(&self, on: bool) {
-        self.reading.store(on, Ordering::Relaxed);
-        if on {
+        if self.reading.swap(on, Ordering::Relaxed) != on && on {
             self.reader.unpark();
         }
-    }
-
-    /// Whether anything is (still) moving: audio arriving or bars falling.
-    pub fn active(&self) -> bool {
-        self.live() || self.bars.iter().any(|&b| b > 0.0)
     }
 
     pub fn delay(&self) -> Duration {
@@ -126,58 +122,123 @@ impl Visualizer {
         Instant::now().checked_sub(self.delay)
     }
 
-    fn live(&self) -> bool {
+    /// Whether audio is playing (arriving, `delay` ago).
+    pub fn live(&self) -> bool {
         let Some(t) = self.heard() else { return false };
         let s = self.shared.lock().unwrap();
         // the latest read before `t`, recent enough to still be playing
         s.marks.iter().rev().find(|(at, _)| *at <= t).is_some_and(|(at, _)| t - *at < STALE)
     }
 
-    /// Advances one frame; returns `n` bar heights in 0..=1.
-    pub fn frame(&mut self, n: usize) -> &[f32] {
-        let dt = self.last_frame.elapsed().as_secs_f32().min(0.25);
-        self.last_frame = Instant::now();
-        if self.bars.len() != n {
-            self.bars = vec![0.0; n];
-        }
-        let targets = if self.live() { self.analyse(n) } else { vec![0.0; n] };
-        for (bar, target) in self.bars.iter_mut().zip(targets) {
-            *bar = if target > *bar { *bar + (target - *bar) * 0.7 } else { (*bar - FALL_PER_SEC * dt).max(target) };
-        }
-        &self.bars
+    /// The last `n` stereo samples heard, oldest first (fewer at first).
+    pub fn recent(&self, n: usize) -> Vec<[f32; 2]> {
+        let s = self.shared.lock().unwrap();
+        let end = self.end_index(&s);
+        s.samples.range(end.saturating_sub(n)..end).copied().collect()
     }
 
-    fn analyse(&mut self, n: usize) -> Vec<f32> {
+    /// Index just past the last sample heard, within `samples`.
+    fn end_index(&self, s: &Shared) -> usize {
+        let end_n = self.heard().and_then(|t| s.written_at(t)).unwrap_or(0);
+        let first_n = s.written - s.samples.len() as u64;
+        end_n.saturating_sub(first_n).min(s.samples.len() as u64) as usize
+    }
+
+    /// `n` log-spaced band levels (0..=1, 40 Hz–16 kHz) of what's heard
+    /// now; silence when nothing plays. The FFT runs at most once per
+    /// few milliseconds however many callers ask.
+    pub fn levels(&mut self, n: usize) -> Vec<f32> {
+        if !self.live() {
+            return vec![0.0; n];
+        }
+        if self.mag_at.is_none_or(|t| t.elapsed() > Duration::from_millis(8)) {
+            self.analyse();
+            self.mag_at = Some(Instant::now());
+        }
+        bands(&self.mag, n)
+    }
+
+    fn analyse(&mut self) {
         {
             let s = self.shared.lock().unwrap();
-            let end_n = self.heard().and_then(|t| s.written_at(t)).unwrap_or(0);
-            // index just past the window's last sample, within `samples`
-            let first_n = s.written - s.samples.len() as u64;
-            let end = end_n.saturating_sub(first_n).min(s.samples.len() as u64) as usize;
+            let end = self.end_index(&s);
             let start = end.saturating_sub(FFT_SIZE);
             let pad = FFT_SIZE - (end - start);
             for (i, c) in self.buf.iter_mut().enumerate() {
-                let x = if i < pad { 0.0 } else { s.samples[start + i - pad] };
+                let x = if i < pad {
+                    0.0
+                } else {
+                    let [l, r] = s.samples[start + i - pad];
+                    (l + r) / 2.0
+                };
                 *c = Complex::new(x * self.window[i], 0.0);
             }
         }
         self.fft.process(&mut self.buf);
-
-        // Magnitude in dBFS per bin (Hann window halves the amplitude).
+        // Hann window halves the amplitude.
         let scale = 4.0 / FFT_SIZE as f32;
-        let mag: Vec<f32> = self.buf[..FFT_SIZE / 2].iter().map(|c| c.norm() * scale).collect();
-        let hz_per_bin = RATE / FFT_SIZE as f32;
-        let edge = |i: usize| LOW_HZ * (HIGH_HZ / LOW_HZ).powf(i as f32 / n as f32);
+        for (m, c) in self.mag.iter_mut().zip(&self.buf) {
+            *m = c.norm() * scale;
+        }
+    }
+}
 
-        (0..n)
-            .map(|i| {
-                let (lo, hi) = (edge(i), edge(i + 1));
-                let centre = (lo * hi).sqrt();
-                let peak = band_level(&mag, lo / hz_per_bin, hi / hz_per_bin, centre / hz_per_bin);
-                let db = 20.0 * peak.max(1e-9).log10() + TILT_DB_PER_OCTAVE * (centre / 1000.0).log2();
-                ((db - FLOOR_DB) / RANGE_DB).clamp(0.0, 1.0)
-            })
-            .collect()
+/// `n` log-spaced band levels in 0..=1 from a magnitude spectrum.
+fn bands(mag: &[f32], n: usize) -> Vec<f32> {
+    let hz_per_bin = RATE / FFT_SIZE as f32;
+    let edge = |i: usize| LOW_HZ * (HIGH_HZ / LOW_HZ).powf(i as f32 / n as f32);
+    (0..n)
+        .map(|i| {
+            let (lo, hi) = (edge(i), edge(i + 1));
+            let centre = (lo * hi).sqrt();
+            let peak = band_level(mag, lo / hz_per_bin, hi / hz_per_bin, centre / hz_per_bin);
+            let db = 20.0 * peak.max(1e-9).log10() + TILT_DB_PER_OCTAVE * (centre / 1000.0).log2();
+            ((db - FLOOR_DB) / RANGE_DB).clamp(0.0, 1.0)
+        })
+        .collect()
+}
+
+/// Seconds a peak cap holds before it falls, and how fast it then falls.
+const PEAK_HOLD: f32 = 0.5;
+const PEAK_FALL_PER_SEC: f32 = 0.6;
+
+/// Bars that rise with the music and fall back slowly, each with a peak
+/// cap that holds a moment above it. One per thing drawn, since each
+/// smooths at its own frame rate and bar count.
+#[derive(Default)]
+pub struct Bars {
+    pub bars: Vec<f32>,
+    pub peaks: Vec<f32>,
+    hold: Vec<f32>,
+    last: Option<Instant>,
+}
+
+impl Bars {
+    /// Moves toward `targets` (resetting if their count changed).
+    pub fn update(&mut self, targets: &[f32]) {
+        let dt = self.last.map_or(0.0, |t| t.elapsed().as_secs_f32().min(0.25));
+        self.last = Some(Instant::now());
+        if self.bars.len() != targets.len() {
+            let n = targets.len();
+            (self.bars, self.peaks, self.hold) = (vec![0.0; n], vec![0.0; n], vec![0.0; n]);
+        }
+        for (i, &t) in targets.iter().enumerate() {
+            let bar = &mut self.bars[i];
+            *bar = if t > *bar { *bar + (t - *bar) * 0.7 } else { (*bar - FALL_PER_SEC * dt).max(t) };
+            if *bar >= self.peaks[i] {
+                self.peaks[i] = *bar;
+                self.hold[i] = PEAK_HOLD;
+            } else if self.hold[i] > 0.0 {
+                self.hold[i] -= dt;
+            } else {
+                self.peaks[i] = (self.peaks[i] - PEAK_FALL_PER_SEC * dt).max(*bar);
+            }
+        }
+    }
+
+    /// Whether anything is still moving (falling bars or caps).
+    pub fn moving(&self) -> bool {
+        self.peaks.iter().any(|&p| p > 0.0)
     }
 }
 
@@ -221,7 +282,7 @@ fn read_loop(fifo: &PathBuf, shared: &Mutex<Shared>, reading: &AtomicBool) {
             for fr in carry[..frames * 4].as_chunks::<4>().0 {
                 let l = i16::from_le_bytes([fr[0], fr[1]]) as f32;
                 let r = i16::from_le_bytes([fr[2], fr[3]]) as f32;
-                s.samples.push_back((l + r) / (2.0 * 32768.0));
+                s.samples.push_back([l / 32768.0, r / 32768.0]);
             }
             s.written += frames as u64;
             let written = s.written;

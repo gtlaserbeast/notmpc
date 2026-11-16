@@ -123,11 +123,12 @@ class Mpd:
 
 class Term:
     """notmpc in a pty. `kitty`: claim to be kitty and speak its keyboard
-    protocol (no rendered screen then; check raw output instead)."""
+    protocol (no rendered screen then; check raw output instead), and with
+    `graphics`, its graphics protocol too."""
 
     def __init__(self, binary, mpd, rows=30, cols=100, kitty=False, config="visualizer = false\nmarquee_speed = 0\n",
-                 args=()):
-        self.mpd, self.rows, self.cols, self.kitty = mpd, rows, cols, kitty
+                 args=(), graphics=False):
+        self.mpd, self.rows, self.cols, self.kitty, self.graphics = mpd, rows, cols, kitty, graphics
         cfg = Path(mpd.env["XDG_CONFIG_HOME"]) / "notmpc"
         cfg.mkdir(parents=True, exist_ok=True)
         (cfg / "config.toml").write_text(config)
@@ -159,9 +160,13 @@ class Term:
             if self.kitty:
                 replies |= {b"\x1b[>0q": b"\x1bP>|kitty(0.39.1)\x1b\\", b"\x1b[?u": b"\x1b[?11u",
                             b"\x1b[16t": b"\x1b[6;20;10t"}
-            for q, a in replies.items():
-                if q in d:
-                    os.write(self.fd, a)
+                if self.graphics:
+                    replies |= {b"\x1b_Gi=1,a=q;": b"\x1b_Gi=1;OK\x1b\\",
+                                b"\x1b[14t": f"\x1b[4;{self.rows * 20};{self.cols * 10}t".encode()}
+            # answered in the order asked: notcurses stops listening at
+            # the device attributes reply, which it asks for last
+            for q, a in sorted(((q, a) for q, a in replies.items() if q in d), key=lambda qa: d.index(qa[0])):
+                os.write(self.fd, a)
             if not self.kitty:
                 self.stream.feed(d)
 

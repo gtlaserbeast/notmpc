@@ -151,7 +151,7 @@ pub const PREVIEW_MAX_PX: u32 = 640;
 
 /// Decodes image bytes, shrunk to at most `max` pixels a side. A cover
 /// notcurses can't decode is the same as no cover.
-fn decode(data: &[u8], max: u32) -> Option<Visual> {
+pub fn decode(data: &[u8], max: u32) -> Option<Visual> {
     let mut v = decode_file(data).ok()?;
     v.downscale(max);
     Some(v)

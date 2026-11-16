@@ -16,6 +16,8 @@ visualizer_rows = 6   # header height with the spectrum on (2-12; 2 = as without
 visualizer_fps = 20
 visualizer_style = "braille"  # two bars per column; "octants": the same, solid; "blocks": one, in eighth blocks
 visualizer_delay_ms = 150  # speakers' lag behind MPD; [ and ] tune it live (saved)
+visualizer_peaks = true    # a cap over each bar at its recent peak
+visualizer_mirror = "off"  # "vertical", "horizontal" (bass in the middle), or "both"
 marquee_speed = 8     # cells/s that too-long text scrolls on the highlighted row; 0 = cut with …
 marquee_count = "once"  # times it scrolls round before stopping at …: a number, "off", "once", "infinite"
 

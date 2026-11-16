@@ -386,6 +386,8 @@ const DEFAULTS: &[(&str, &[(&str, &str)])] = &[
             ("1", r#"SwitchToTab("Queue")"#),
             ("2", r#"SwitchToTab("Directories")"#),
             ("3", r#"SwitchToTab("Search")"#),
+            // notmpc
+            ("4", r#"SwitchToTab("Visualizer")"#),
             ("<C-u>", "Update"),
             ("<C-U>", "Rescan"),
             // notmpc
