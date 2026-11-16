@@ -1,6 +1,7 @@
 //! The Visualizer tab: a big picture of the music, drawn in pixels.
 //!
 //! - **Spectrum**: the header's bars, full size, with peak caps.
+//! - **Cover**: the bars cut out of the album cover, over a dim copy of it.
 //! - **Scope**: a goniometer (vectorscope). Left against right, turned so
 //!   mono is a vertical line and wide stereo spreads sideways; the trace
 //!   fades like a phosphor screen.
@@ -8,6 +9,12 @@
 //!   bottom, loudness as colour.
 //! - **Radial**: the spectrum bent round a circle, bass at the top, with
 //!   the album cover in the middle pulsing to the bass.
+//! - **Ridgeline**: the last few seconds of spectra as lines receding into
+//!   the distance, each hiding the ones behind it.
+//! - **Warp**: a feedback loop. Each frame is the last one zoomed in,
+//!   turned a little and faded, with a ring-shaped waveform (and the cover,
+//!   if there is one) drawn over the middle, so it all streams outward;
+//!   the bass speeds the zoom.
 //!
 //! Colours come from the theme's `visualizer_colors`, or from the cover.
 //! Each frame is drawn into an RGBA canvas; kitty gets it through shared
@@ -15,7 +22,8 @@
 //! other terminals get it through notcurses in character cells. Nothing
 //! here runs, and its buffers are dropped, while the tab isn't showing.
 
-use std::f32::consts::{SQRT_2, TAU};
+use std::collections::VecDeque;
+use std::f32::consts::{PI, SQRT_2, TAU};
 use std::time::Instant;
 
 use anyhow::Result;
@@ -31,20 +39,27 @@ use crate::viz::{Bars, Visualizer};
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Mode {
     Spectrum,
+    Cover,
     Scope,
     Waterfall,
+    Ridgeline,
     Radial,
+    Warp,
 }
 
 impl Mode {
-    pub const ALL: [Mode; 4] = [Mode::Spectrum, Mode::Scope, Mode::Waterfall, Mode::Radial];
+    pub const ALL: [Mode; 7] =
+        [Mode::Spectrum, Mode::Cover, Mode::Scope, Mode::Waterfall, Mode::Ridgeline, Mode::Radial, Mode::Warp];
 
     pub fn name(self) -> &'static str {
         match self {
             Mode::Spectrum => "Spectrum",
+            Mode::Cover => "Cover",
             Mode::Scope => "Scope",
             Mode::Waterfall => "Waterfall",
+            Mode::Ridgeline => "Ridgeline",
             Mode::Radial => "Radial",
+            Mode::Warp => "Warp",
         }
     }
 
@@ -67,6 +82,14 @@ const KITTY_MAX_PX: f32 = 360_000.0;
 const WATERFALL_SECS: f32 = 12.0;
 /// Bands round the radial spectrum's half circle.
 const RADIAL_BANDS: usize = 48;
+/// Lines the ridgeline shows, one every `RIDGE_STEP` seconds.
+const RIDGE_LINES: usize = 40;
+const RIDGE_STEP: f32 = 0.07;
+/// Points along each ridge.
+const RIDGE_POINTS: usize = 96;
+/// Most pixels the warp's canvas has: every pixel is resampled each frame,
+/// and the picture is soft anyway.
+const WARP_MAX_PX: f32 = 90_000.0;
 
 struct Canvas {
     w: u32,
@@ -76,11 +99,25 @@ struct Canvas {
     heat: Vec<f32>,
     /// Radial: each pixel's (band or `u16::MAX` between bars, radius).
     polar: Vec<(u16, f32)>,
+    /// Cover: the cover scaled to fill the canvas.
+    backdrop: Vec<u32>,
+    /// Warp: the picture as light (0..1 per channel), and the next one.
+    trail: Vec<[f32; 3]>,
+    trail_next: Vec<[f32; 3]>,
 }
 
 impl Canvas {
     fn new(w: u32, h: u32) -> Self {
-        Self { w, h, rgba: vec![0; (w * h * 4) as usize], heat: Vec::new(), polar: Vec::new() }
+        Self {
+            w,
+            h,
+            rgba: vec![0; (w * h * 4) as usize],
+            heat: Vec::new(),
+            polar: Vec::new(),
+            backdrop: Vec::new(),
+            trail: Vec::new(),
+            trail_next: Vec::new(),
+        }
     }
 
     fn clear(&mut self) {
@@ -109,9 +146,14 @@ pub struct Scene<'nc> {
     pub cover_colors: bool,
     canvas: Option<Canvas>,
     bars: Bars,
-    /// Scope: the recent loudest sample, for automatic gain.
+    /// Scope, Warp: the recent loudest sample, for automatic gain.
     gain: f32,
+    /// Scope, Warp: some trace is still fading.
     heat_left: bool,
+    /// Ridgeline: the spectra shown, newest (the front one, still
+    /// changing) first, and the time since the front one started.
+    ridges: VecDeque<Vec<f32>>,
+    ridge_age: f32,
     cover: Option<Image>,
     /// The song `cover` belongs to (fetched or not).
     cover_key: Option<String>,
@@ -137,6 +179,8 @@ impl<'nc> Scene<'nc> {
             bars: Bars::default(),
             gain: 0.0,
             heat_left: false,
+            ridges: VecDeque::new(),
+            ridge_age: 0.0,
             cover: None,
             cover_key: None,
             palette: Vec::new(),
@@ -170,9 +214,14 @@ impl<'nc> Scene<'nc> {
             c.clear();
             c.heat.clear();
             c.polar.clear();
+            c.backdrop.clear();
+            c.trail.clear();
+            c.trail_next.clear();
         }
         self.bars = Bars::default();
         self.heat_left = false;
+        self.ridges.clear();
+        self.ridge_age = 0.0;
         self.fresh = true;
     }
 
@@ -185,15 +234,18 @@ impl<'nc> Scene<'nc> {
         self.cover_key = Some(key.to_owned());
         self.cover = data.and_then(|d| crate::art::decode(d, 256)).and_then(|v| v.image());
         self.palette = self.cover.as_ref().map(palette).unwrap_or_default();
+        if let Some(c) = self.canvas.as_mut() {
+            c.backdrop.clear();
+        }
         self.fresh = true;
     }
 
     /// Whether the next frame would differ from this one.
     pub fn moving(&self, live: bool) -> bool {
         live || match self.mode {
-            Mode::Spectrum | Mode::Radial => self.bars.moving(),
-            Mode::Scope => self.heat_left,
-            Mode::Waterfall => false,
+            Mode::Spectrum | Mode::Cover | Mode::Radial => self.bars.moving(),
+            Mode::Scope | Mode::Warp => self.heat_left,
+            Mode::Waterfall | Mode::Ridgeline => false,
         }
     }
 
@@ -207,6 +259,8 @@ impl<'nc> Scene<'nc> {
         self.shown = None;
         self.bars = Bars::default();
         self.heat_left = false;
+        self.ridges.clear();
+        self.ridge_age = 0.0;
         self.fresh = true;
         self.last = None;
     }
@@ -233,14 +287,61 @@ impl<'nc> Scene<'nc> {
         let fresh = std::mem::take(&mut self.fresh);
         let mut c = self.canvas.take().expect("made above");
         let changed = match self.mode {
-            Mode::Spectrum => {
+            Mode::Spectrum | Mode::Cover => {
                 let moving = live || self.bars.moving();
                 if moving || fresh {
                     let bands = if look.mirror.horizontal() { bar_count(area).div_ceil(2) } else { bar_count(area) };
                     self.bars.update(&viz.levels(bands));
-                    spectrum(&mut c, &self.bars, bar_count(area), &stops, look);
+                    let fill = match (self.mode, self.cover.as_ref()) {
+                        (Mode::Cover, Some(img)) => {
+                            if c.backdrop.len() != (c.w * c.h) as usize {
+                                c.backdrop = cover_fill(img, c.w, c.h);
+                            }
+                            Some(std::mem::take(&mut c.backdrop))
+                        }
+                        _ => None,
+                    };
+                    spectrum(&mut c, &self.bars, bar_count(area), &stops, look, fill.as_deref());
+                    if let Some(f) = fill {
+                        c.backdrop = f;
+                    }
                 }
                 moving || fresh
+            }
+            Mode::Ridgeline => {
+                if live {
+                    self.bars.update(&viz.levels(RIDGE_POINTS));
+                    self.ridge_age += dt;
+                    if self.ridges.is_empty() || self.ridge_age >= RIDGE_STEP {
+                        self.ridge_age = if self.ridges.is_empty() { 0.0 } else { self.ridge_age % RIDGE_STEP };
+                        self.ridges.push_front(self.bars.bars.clone());
+                        self.ridges.truncate(RIDGE_LINES + 1);
+                    } else {
+                        self.ridges[0].clone_from(&self.bars.bars);
+                    }
+                }
+                if live || fresh {
+                    ridgeline(&mut c, &self.ridges, self.ridge_age / RIDGE_STEP, &stops);
+                }
+                live || fresh
+            }
+            Mode::Warp => {
+                let n = (c.w * c.h) as usize;
+                if c.trail.len() != n {
+                    c.trail = vec![[0.0; 3]; n];
+                    c.trail_next = vec![[0.0; 3]; n];
+                }
+                let changed = live || self.heat_left || fresh;
+                if changed {
+                    let (samples, bass) = if live {
+                        let lv = viz.levels(24);
+                        (viz.recent(1024), lv[..3].iter().sum::<f32>() / 3.0)
+                    } else {
+                        (Vec::new(), 0.0)
+                    };
+                    self.heat_left = warp(&mut c, &samples, bass, dt, &mut self.gain, self.cover.as_ref(), &stops);
+                }
+                changed
             }
             Mode::Scope => {
                 let decay = 0.8f32.powf(dt * 20.0);
@@ -283,13 +384,15 @@ impl<'nc> Scene<'nc> {
     }
 
     /// The canvas for `area`: kitty's scaled to at most `KITTY_MAX_PX`
-    /// (keeping the screen's shape, so circles stay round); otherwise
+    /// (the warp's to `WARP_MAX_PX`), keeping the screen's shape so circles
+    /// stay round; otherwise
     /// about the dots character cells can show.
     fn canvas_size(&self, area: Rect) -> (u32, u32) {
         if self.use_kitty {
             let (ch, cw) = self.nc.cell_px().unwrap_or((20, 10));
             let (fw, fh) = ((area.cols * cw) as f32, (area.rows * ch) as f32);
-            let k = (KITTY_MAX_PX / (fw * fh)).sqrt().min(1.0);
+            let most = if self.mode == Mode::Warp { WARP_MAX_PX } else { KITTY_MAX_PX };
+            let k = (most / (fw * fh)).sqrt().min(1.0);
             (((fw * k) as u32).max(8), ((fh * k) as u32).max(8))
         } else {
             (area.cols * 2, area.rows * 4)
@@ -328,8 +431,17 @@ fn bar_count(area: Rect) -> usize {
     area.cols.clamp(8, 160) as usize
 }
 
-fn spectrum(c: &mut Canvas, bars: &Bars, n: usize, stops: &[u32], look: &Look) {
-    c.clear();
+/// The bars, coloured from `stops`, or cut out of `fill` (a picture the
+/// canvas's size, shown dim behind them).
+fn spectrum(c: &mut Canvas, bars: &Bars, n: usize, stops: &[u32], look: &Look, fill: Option<&[u32]>) {
+    match fill {
+        Some(f) => {
+            for (i, &rgb) in f.iter().enumerate() {
+                c.set(i, rgb, 0.22);
+            }
+        }
+        None => c.clear(),
+    }
     let (w, h) = (c.w as f32, c.h as f32);
     let horizontal = look.mirror.horizontal();
     let bands = bars.bars.len();
@@ -365,20 +477,24 @@ fn spectrum(c: &mut Canvas, bars: &Bars, n: usize, stops: &[u32], look: &Look) {
                 if !on_bar && !on_cap {
                     continue;
                 }
-                let (col, a) = if on_cap {
-                    (scale(rgb, 1.25), 1.0)
-                } else {
-                    // brighter toward the bar's tip
-                    (scale(rgb, 0.45 + 0.55 * d_f / span), 0.95)
+                let paint = |c: &mut Canvas, y: f32| {
+                    let i = (y as u32 * c.w + x) as usize;
+                    let (col, a) = match fill {
+                        _ if on_cap => (scale(rgb, 1.25), 1.0),
+                        Some(f) => (f[i], 1.0),
+                        // brighter toward the bar's tip
+                        None => (scale(rgb, 0.45 + 0.55 * d_f / span), 0.95),
+                    };
+                    c.set(i, col, a);
                 };
                 let up = base - 1.0 - d_f;
                 if up >= 0.0 {
-                    c.set((up as u32 * c.w + x) as usize, col, a);
+                    paint(c, up);
                 }
                 if look.mirror.vertical() {
                     let down = base + d_f;
                     if down < h {
-                        c.set((down as u32 * c.w + x) as usize, col, a);
+                        paint(c, down);
                     }
                 }
             }
@@ -425,6 +541,11 @@ fn scope(c: &mut Canvas, samples: &[[f32; 2]], decay: f32, gain: &mut f32, stops
 /// Adds `amount` along the line from `a` to `b`, spread thinner the longer
 /// it is (a fast-moving trace is fainter, like a real scope's beam).
 fn line(heat: &mut [f32], w: u32, h: u32, a: (f32, f32), b: (f32, f32), amount: f32) {
+    trace(w, h, a, b, amount, |i, v| heat[i] += v);
+}
+
+/// `line`, handing each pixel index and its share to `add`.
+fn trace(w: u32, h: u32, a: (f32, f32), b: (f32, f32), amount: f32, mut add: impl FnMut(usize, f32)) {
     let (dx, dy) = (b.0 - a.0, b.1 - a.1);
     let len = dx.abs().max(dy.abs()).max(1.0);
     let each = amount / len.sqrt();
@@ -436,7 +557,7 @@ fn line(heat: &mut [f32], w: u32, h: u32, a: (f32, f32), b: (f32, f32), amount: 
         for (ox, oy, k) in [(0.0, 0.0, 1.0), (1.0, 0.0, 0.35), (-1.0, 0.0, 0.35), (0.0, 1.0, 0.35), (0.0, -1.0, 0.35)] {
             let (x, y) = (x + ox, y + oy);
             if x >= 0.0 && y >= 0.0 && (x as u32) < w && (y as u32) < h {
-                heat[(y as u32 * w + x as u32) as usize] += each * k;
+                add((y as u32 * w + x as u32) as usize, each * k);
             }
         }
     }
@@ -531,6 +652,214 @@ fn polar_map(w: u32, h: u32, bands: usize) -> Vec<(u16, f32)> {
     out
 }
 
+/// `img` scaled (smoothly) to cover a `w`×`h` canvas, cropping what
+/// sticks out, as RGB.
+fn cover_fill(img: &Image, w: u32, h: u32) -> Vec<u32> {
+    let k = (img.w as f32 / w as f32).min(img.h as f32 / h as f32);
+    let (ox, oy) = ((img.w as f32 - w as f32 * k) / 2.0, (img.h as f32 - h as f32 * k) / 2.0);
+    let mut out = Vec::with_capacity((w * h) as usize);
+    for y in 0..h {
+        for x in 0..w {
+            let rgb = sample(img, ox + (x as f32 + 0.5) * k - 0.5, oy + (y as f32 + 0.5) * k - 0.5);
+            out.push((u32::from(rgb[0]) << 16) | (u32::from(rgb[1]) << 8) | u32::from(rgb[2]));
+        }
+    }
+    out
+}
+
+/// `img` at (`x`, `y`), between its pixels.
+fn sample(img: &Image, x: f32, y: f32) -> [u8; 3] {
+    let (x, y) = (x.clamp(0.0, (img.w - 1) as f32), y.clamp(0.0, (img.h - 1) as f32));
+    let (x0, y0) = (x as u32, y as u32);
+    let (x1, y1) = ((x0 + 1).min(img.w - 1), (y0 + 1).min(img.h - 1));
+    let (fx, fy) = (x.fract(), y.fract());
+    let px = |x: u32, y: u32| img.px[(y * img.w + x) as usize];
+    let mut out = [0u8; 3];
+    for (ch, o) in out.iter_mut().enumerate() {
+        let top = f32::from(px(x0, y0)[ch]) * (1.0 - fx) + f32::from(px(x1, y0)[ch]) * fx;
+        let bottom = f32::from(px(x0, y1)[ch]) * (1.0 - fx) + f32::from(px(x1, y1)[ch]) * fx;
+        *o = (top * (1.0 - fy) + bottom * fy) as u8;
+    }
+    out
+}
+
+/// Draws `ridges` (newest first) from the back forward, each hiding what's
+/// behind it. `scroll` (0..1) is how far the front one is toward the
+/// next step back, so the lines glide rather than jump.
+fn ridgeline(c: &mut Canvas, ridges: &VecDeque<Vec<f32>>, scroll: f32, stops: &[u32]) {
+    c.clear();
+    let (w, h) = (c.w as f32, c.h as f32);
+    let (horizon, ground) = (h * 0.1, h * 0.96);
+    // perspective: the front line is full size, the back one `far` of it
+    let size = |depth: f32| 1.0 / (1.0 + 2.5 * depth);
+    let far = size(1.0);
+    let thick = (h / 220.0).max(1.0);
+    for (k, levels) in ridges.iter().enumerate().rev() {
+        let depth = (k as f32 + scroll) / RIDGE_LINES as f32;
+        if depth > 1.0 || levels.len() < 2 {
+            continue;
+        }
+        let p = size(depth);
+        let base = horizon + (ground - horizon) * (p - far) / (1.0 - far);
+        let amp = h * 0.42 * p;
+        let half = w * 0.47 * (0.35 + 0.65 * p);
+        let (x0, x1) = ((w / 2.0 - half).max(0.0) as u32, ((w / 2.0 + half) as u32).min(c.w));
+        // dimmer into the distance, and fading in at the very back
+        let light = (1.0 - depth).powf(0.6) * ((1.0 - depth) * 8.0).min(1.0);
+        let mut prev: Option<f32> = None;
+        for x in x0..x1 {
+            let u = (x - x0) as f32 / (x1 - x0).max(1) as f32;
+            // flat at the ends, the spectrum across the middle
+            let edge = (u.min(1.0 - u) / 0.06).min(1.0);
+            let f = (u - 0.06).clamp(0.0, 0.88) / 0.88 * (levels.len() - 1) as f32;
+            let (i, t) = (f as usize, f.fract());
+            let v = levels[i] * (1.0 - t) + levels[(i + 1).min(levels.len() - 1)] * t;
+            let y = base - amp * v * edge * edge * (3.0 - 2.0 * edge);
+            // hide what's behind, from the line down to its base
+            for row in (y.max(0.0) as u32)..=(base as u32).min(c.h - 1) {
+                c.rgba[((row * c.w + x) * 4 + 3) as usize] = 0;
+            }
+            let rgb = scale(gradient(stops, u), 0.55 + 0.6 * v);
+            let (top, bottom) = match prev {
+                Some(q) => (q.min(y), q.max(y) + thick),
+                None => (y, y + thick),
+            };
+            for row in (top.max(0.0) as u32)..(bottom.ceil() as u32).min(c.h) {
+                c.set((row * c.w + x) as usize, rgb, light);
+            }
+            prev = Some(y);
+        }
+    }
+}
+
+/// The warp's next frame: the last one zoomed in about the middle, turned
+/// and faded, then the cover (if any) blended into the middle and the
+/// waveform drawn round it as a ring. Returns whether anything is left.
+fn warp(
+    c: &mut Canvas,
+    samples: &[[f32; 2]],
+    bass: f32,
+    dt: f32,
+    gain: &mut f32,
+    cover: Option<&Image>,
+    stops: &[u32],
+) -> bool {
+    let (w, h) = (c.w as usize, c.h as usize);
+    let (cx, cy) = (c.w as f32 / 2.0, c.h as f32 / 2.0);
+    // per 20 fps frame, so the speed doesn't depend on the frame rate
+    let k = dt * 20.0;
+    let fade = 0.9f32.powf(k);
+    let zoom = 1.0 + (0.012 + 0.06 * bass) * k;
+    let (sin, cos) = (0.006 * k).sin_cos();
+    let src = &c.trail;
+    for y in 0..h {
+        for x in 0..w {
+            let (dx, dy) = (x as f32 + 0.5 - cx, y as f32 + 0.5 - cy);
+            // where this pixel was: nearer the middle, turned back
+            let sx = (dx * cos + dy * sin) / zoom + cx - 0.5;
+            let sy = (dy * cos - dx * sin) / zoom + cy - 0.5;
+            let out = &mut c.trail_next[y * w + x];
+            if sx < 0.0 || sy < 0.0 || sx > (w - 1) as f32 || sy > (h - 1) as f32 {
+                *out = [0.0; 3];
+                continue;
+            }
+            let (x0, y0) = (sx as usize, sy as usize);
+            let (x1, y1) = ((x0 + 1).min(w - 1), (y0 + 1).min(h - 1));
+            let (fx, fy) = (sx.fract(), sy.fract());
+            let (a, b, cc, d) = (src[y0 * w + x0], src[y0 * w + x1], src[y1 * w + x0], src[y1 * w + x1]);
+            for ch in 0..3 {
+                let top = a[ch] + (b[ch] - a[ch]) * fx;
+                let bottom = cc[ch] + (d[ch] - cc[ch]) * fx;
+                out[ch] = (top + (bottom - top) * fy) * fade;
+            }
+        }
+    }
+    std::mem::swap(&mut c.trail, &mut c.trail_next);
+    let radius = cx.min(cy);
+    if let Some(img) = cover.filter(|_| !samples.is_empty()) {
+        // the cover in a disc, more of it on a beat
+        let rc = radius * 0.2 * (0.9 + 0.3 * bass);
+        let mix = (0.2 + 0.6 * bass).min(0.8);
+        let side = img.w.min(img.h) as f32;
+        let (y0, y1) = ((cy - rc).max(0.0) as usize, ((cy + rc) as usize + 1).min(h));
+        let (x0, x1) = ((cx - rc).max(0.0) as usize, ((cx + rc) as usize + 1).min(w));
+        for y in y0..y1 {
+            for x in x0..x1 {
+                let (dx, dy) = (x as f32 + 0.5 - cx, y as f32 + 0.5 - cy);
+                let r = dx.hypot(dy);
+                if r >= rc {
+                    continue;
+                }
+                let a = mix * ((rc - r) / 2.0).min(1.0);
+                let p =
+                    sample(img, img.w as f32 / 2.0 + dx / rc * side / 2.0, img.h as f32 / 2.0 + dy / rc * side / 2.0);
+                let t = &mut c.trail[y * w + x];
+                for ch in 0..3 {
+                    t[ch] += (f32::from(p[ch]) / 255.0 - t[ch]) * a;
+                }
+            }
+        }
+    }
+    if samples.len() > 1 {
+        let mono: Vec<f32> = samples.iter().map(|&[l, r]| (l + r) / 2.0).collect();
+        let loudest = mono.iter().fold(0.0f32, |m, v| m.max(v.abs()));
+        *gain = (*gain * 0.98).max(loudest).max(0.02);
+        let n = mono.len();
+        // ease the end into the start so the ring closes
+        let blend = n / 12;
+        let at = |i: usize| {
+            let v = mono[i];
+            if i + blend >= n {
+                let f = (i + blend + 1 - n) as f32 / (blend + 1) as f32;
+                v * (1.0 - f) + mono[i + blend + 1 - n] * f
+            } else {
+                v
+            }
+        };
+        let r0 = radius * (0.32 + 0.06 * bass);
+        let point = |i: usize| {
+            let a = i as f32 / n as f32 * TAU - PI / 2.0;
+            let r = r0 * (1.0 + 0.45 * at(i) / *gain);
+            (cx + r * a.cos(), cy + r * a.sin())
+        };
+        let mut prev = point(0);
+        for i in 1..=n {
+            let p = point(i % n);
+            // bass to treble colours round from the top and back
+            let u = i as f32 / n as f32;
+            let rgb = gradient(stops, 1.0 - (1.0 - 2.0 * u).abs());
+            let col = [(rgb >> 16) as f32 / 255.0, ((rgb >> 8) & 0xff) as f32 / 255.0, (rgb & 0xff) as f32 / 255.0];
+            let trail = &mut c.trail;
+            trace(c.w, c.h, prev, p, 0.6, |j, v| {
+                let t = &mut trail[j];
+                for ch in 0..3 {
+                    t[ch] += col[ch] * v;
+                }
+                // brighter only up to a point, keeping the hue (not white)
+                let most = t[0].max(t[1]).max(t[2]);
+                if most > 1.2 {
+                    t.iter_mut().for_each(|v| *v *= 1.2 / most);
+                }
+            });
+            prev = p;
+        }
+    }
+    let mut left = false;
+    for (i, t) in c.trail.iter_mut().enumerate() {
+        let most = t[0].max(t[1]).max(t[2]);
+        if most < 0.004 {
+            *t = [0.0; 3];
+            c.rgba[i * 4 + 3] = 0;
+            continue;
+        }
+        left = true;
+        // the colour at full strength; how bright as opacity
+        let ch = |v: f32| (v / most * 255.0) as u8;
+        c.rgba[i * 4..i * 4 + 4].copy_from_slice(&[ch(t[0]), ch(t[1]), ch(t[2]), (most.min(1.0) * 255.0) as u8]);
+    }
+    left
+}
+
 /// A cover's main colours, dark to light: its most common distinct
 /// colours, favouring vivid ones, lifted so none is too dark to see.
 fn palette(img: &Image) -> Vec<u32> {
@@ -582,8 +911,9 @@ mod tests {
 
     #[test]
     fn modes_cycle_and_parse() {
-        assert_eq!(Mode::Spectrum.step(-1), Mode::Radial);
-        assert_eq!(Mode::Radial.step(1), Mode::Spectrum);
+        assert_eq!(Mode::Spectrum.step(-1), Mode::Warp);
+        assert_eq!(Mode::Warp.step(1), Mode::Spectrum);
+        assert_eq!(Mode::Spectrum.step(1), Mode::Cover);
         assert_eq!(Mode::from_name("waterfall"), Some(Mode::Waterfall));
     }
 
@@ -621,6 +951,53 @@ mod tests {
         assert_eq!(at(42, 10), 0);
         // the bottom: treble
         assert_eq!(at(58, 90), 3);
+    }
+
+    #[test]
+    fn a_front_ridge_hides_the_ones_behind() {
+        let line_rows = |ridges: [Vec<f32>; 2]| {
+            let mut c = Canvas::new(200, 100);
+            ridgeline(&mut c, &ridges.into_iter().collect(), 0.0, &[0xffffff]);
+            (0..100u32).filter(|&y| c.rgba[((y * 200 + 100) * 4 + 3) as usize] > 0).collect::<Vec<_>>()
+        };
+        // newest (front) first: two flat lines show as two runs
+        let flat = line_rows([vec![0.0; 8], vec![0.0; 8]]);
+        assert!(flat.windows(2).any(|w| w[1] > w[0] + 1), "{flat:?}");
+        // a tall front line rises over the flat one behind and hides it
+        let tall = line_rows([vec![1.0; 8], vec![0.0; 8]]);
+        assert!(tall.windows(2).all(|w| w[1] == w[0] + 1), "one run: {tall:?}");
+        assert!(tall[0] < flat[0], "{tall:?} above {flat:?}");
+    }
+
+    #[test]
+    fn warp_streams_outward_and_fades() {
+        let mut c = Canvas::new(60, 60);
+        c.trail = vec![[0.0; 3]; 3600];
+        c.trail_next = c.trail.clone();
+        c.trail[30 * 60 + 40] = [1.0; 3];
+        let mut gain = 0.0;
+        assert!(warp(&mut c, &[], 0.0, 1.0, &mut gain, None, &[0xffffff]));
+        let (i, v) = c.trail.iter().enumerate().max_by(|a, b| a.1[0].total_cmp(&b.1[0])).unwrap();
+        let x = i % 60;
+        assert!(x >= 40 && v[0] < 0.95, "moved out from the middle at {x}, faded to {}", v[0]);
+        for _ in 0..200 {
+            warp(&mut c, &[], 0.0, 1.0, &mut gain, None, &[0xffffff]);
+        }
+        assert!(!warp(&mut c, &[], 0.0, 1.0, &mut gain, None, &[0xffffff]), "and goes out");
+    }
+
+    #[test]
+    fn cover_bars_show_the_cover() {
+        let look = Look { colors: &[0xffffff], mirror: VisualizerMirror::Off, peaks: false, fps: 20 };
+        let mut c = Canvas::new(40, 20);
+        let fill: Vec<u32> = (0..800).map(|i| if i % 40 < 20 { 0xff0000 } else { 0x0000ff }).collect();
+        let mut bars = Bars::default();
+        bars.update(&[1.0, 0.0]);
+        spectrum(&mut c, &bars, 2, &[0xffffff], &look, Some(&fill));
+        let px = |x: u32, y: u32| &c.rgba[((y * 40 + x) * 4) as usize..((y * 40 + x) * 4 + 4) as usize];
+        assert_eq!(px(5, 10), [255, 0, 0, 255], "a bar is the cover");
+        assert_eq!(&px(30, 10)[..3], [0, 0, 255], "dim cover between");
+        assert!(px(30, 10)[3] < 80);
     }
 
     #[test]
@@ -670,11 +1047,11 @@ mod dump {
         };
 
         let mut c = Canvas::new(w, h);
-        spectrum(&mut c, &bars, 100, &colors, &look);
+        spectrum(&mut c, &bars, 100, &colors, &look, None);
         save("spectrum", &c);
         let both = Look { mirror: VisualizerMirror::Both, ..look };
         let half = fallen(50);
-        spectrum(&mut c, &half, 100, &colors, &both);
+        spectrum(&mut c, &half, 100, &colors, &both, None);
         save("spectrum-mirrored", &c);
 
         let mut c = Canvas::new(w, h);
@@ -722,5 +1099,41 @@ mod dump {
         };
         radial(&mut c, &rb, Some(&cover), &palette(&cover), true);
         save("radial", &c);
+
+        let mut c = Canvas::new(w, h);
+        let fill = cover_fill(&cover, w, h);
+        spectrum(&mut c, &bars, 100, &palette(&cover), &look, Some(&fill));
+        save("cover", &c);
+
+        let mut c = Canvas::new(w, h);
+        let mut ridges = VecDeque::new();
+        for f in 0..RIDGE_LINES {
+            let lv: Vec<f32> = levels(RIDGE_POINTS)
+                .iter()
+                .enumerate()
+                .map(|(i, v)| (v * (0.6 + 0.4 * ((f as f32 * 0.7 + i as f32 * 0.3).sin()))).max(0.0))
+                .collect();
+            ridges.push_back(lv);
+        }
+        ridgeline(&mut c, &ridges, 0.4, &colors);
+        save("ridgeline", &c);
+
+        let (ww, wh) = (442, 203);
+        let mut c = Canvas::new(ww, wh);
+        c.trail = vec![[0.0; 3]; (ww * wh) as usize];
+        c.trail_next = c.trail.clone();
+        let mut gain = 0.0;
+        for f in 0..60 {
+            let chunk: Vec<[f32; 2]> = (0..1024)
+                .map(|i| {
+                    let t = (f * 1024 + i) as f32 / 44100.0;
+                    let v = (t * 110.0 * TAU).sin() * 0.5 + (t * 660.0 * TAU).sin() * 0.25;
+                    [v, v]
+                })
+                .collect();
+            let bass = if f % 8 < 2 { 0.9 } else { 0.3 };
+            warp(&mut c, &chunk, bass, 0.05, &mut gain, Some(&cover), &colors);
+        }
+        save("warp", &c);
     }
 }

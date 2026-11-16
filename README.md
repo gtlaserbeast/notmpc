@@ -166,13 +166,19 @@ Tab 4 is a visualizer filling the window, in pixels. The buttons along its
 top pick a mode (or `h` / `l`):
 
 - **Spectrum**: the bars full size, with peak caps (and `visualizer_mirror`).
+- **Cover**: the same bars cut out of the album cover, over a dim copy of it.
 - **Scope**: a goniometer. Left is plotted against right, turned so mono is
   a vertical line and wide stereo spreads sideways; the trace fades like a
   phosphor screen.
 - **Waterfall**: a spectrogram scrolling right to left, about 12 s across,
   bass at the bottom, loudness as colour.
+- **Ridgeline**: the last three seconds of spectra as lines receding into
+  the distance, each hiding the ones behind it.
 - **Radial**: the spectrum bent round a circle, bass at the top, with the
   album cover in the middle pulsing to the bass.
+- **Warp**: a feedback loop. Each frame is the last one zoomed in, turned a
+  little and faded, with the waveform drawn as a ring and the cover blended
+  into the middle, so everything streams outward; the bass speeds it up.
 
 The colours are `visualizer_colors`, or, with **colours: cover** (click it,
 or `Space`), the cover's own main colours. The mode and colour choice are

@@ -301,7 +301,11 @@ def test_visualizer_tab_modes_and_idle_cost(mpd, bin):
     assert t.find(" Spectrum ") and t.find(" Radial "), t.text()
     assert wait_for(reading, 3), "the tab reads the FIFO"
     t.send("l")
-    assert 'scene = "Scope"' in _state(mpd), _state(mpd)
+    assert 'scene = "Cover"' in _state(mpd), _state(mpd)
+    t.send("h")
+    t.send("h")
+    assert 'scene = "Warp"' in _state(mpd), "wraps round: " + _state(mpd)
+    assert t.find(" Warp ") and t.find("colours: theme"), "seven buttons and the switch fit: " + t.text()
     x, y = t.find(" Waterfall ")
     t.click(x + 2, y)
     assert 'scene = "Waterfall"' in _state(mpd), _state(mpd)

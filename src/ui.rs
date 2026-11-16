@@ -394,15 +394,18 @@ impl App<'_> {
     /// then the picture.
     fn draw_scene_tab(&mut self, p: &mut Plane, body: Rect) {
         let t = &self.cfg.theme;
+        let colors = if self.scene.cover_colors { "colours: cover" } else { "colours: theme" };
+        // the buttons touch when spaced ones would crowd out the colours
+        let buttons: u32 = SceneMode::ALL.iter().map(|m| nc::width(m.name()) as u32 + 3).sum();
+        let gap = u32::from(1 + buttons + nc::width(colors) as u32 + 3 < body.cols);
         let mut x = body.x + 1;
         for mode in SceneMode::ALL {
             let label = format!(" {} ", mode.name());
             let style = if mode == self.scene.mode { t.tab_active } else { t.tab_inactive };
             let end = put(p, body.y, x, &label, style);
             self.hit(body.y, x, end - x, Target::SceneMode(mode));
-            x = end + 1;
+            x = end + gap;
         }
-        let colors = if self.scene.cover_colors { "colours: cover" } else { "colours: theme" };
         let hint = "h/l mode · space colours ";
         let right = body.x + body.cols;
         let cw = nc::width(colors) as u32 + 2;
