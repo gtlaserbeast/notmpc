@@ -251,8 +251,11 @@ The default keys are rmpc's (rmpc names and notation, so snippets carry
 over). The default theme uses the terminal's palette, so it follows your
 terminal's colour scheme, and only symbols any monospace font has.
 
-A config file with a mistake in it doesn't stop notmpc: it starts with the
-defaults and says what's wrong in the footer until you press a key.
+A mistake in the config file doesn't stop notmpc. A bad value, an
+unknown setting, key binding or theme entry is left at its default and
+the rest of the file still applies; the footer names what was wrong until
+you press a key. Only a file that isn't TOML at all (a missing quote, say)
+is ignored whole, with the line it broke on.
 Settings go above the first `[section]` header; TOML puts anything below
 one inside that section.
 

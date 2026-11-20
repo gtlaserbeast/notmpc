@@ -86,9 +86,10 @@ fn main() -> Result<ExitCode> {
 
     // Load config and connect before taking over the terminal so errors
     // print normally.
-    // A broken config file still starts the player, with the defaults; the
-    // footer says why (a window opened with `kitty -e` closes on an error).
-    let (cfg, cfg_err) = Config::load();
+    // A config file with mistakes still starts the player, with defaults
+    // for what's wrong (or for everything, if it isn't TOML); the footer
+    // says why (a window opened with `kitty -e` closes on an error).
+    let (cfg, cfg_note) = Config::load();
     let target = Target::from_env();
     // A hung MPD must not freeze the UI; `idle` below waits as long as it likes.
     let conn = Conn::connect_timeout(&target, MPD_TIMEOUT)?;
@@ -97,11 +98,8 @@ fn main() -> Result<ExitCode> {
     let nc = Nc::new()?;
     nc.enable_mouse();
     let mut app = App::new(&nc, cfg, conn)?;
-    if let Some(e) = cfg_err {
-        // the reason first: the file's path (the outermost context) is long
-        let why: Vec<String> = e.chain().skip(1).map(ToString::to_string).collect();
-        let why = if why.is_empty() { e.to_string() } else { why.join(": ") };
-        app.say_until_key(format!("config.toml ignored: {why}"));
+    if let Some(note) = cfg_note {
+        app.say_until_key(note);
     }
     // Whether anything but the visualizer may have changed since the last
     // full draw; visualizer frames alone redraw just its plane.

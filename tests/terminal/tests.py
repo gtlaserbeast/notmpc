@@ -233,15 +233,25 @@ def test_marquee_scrolls_the_highlighted_row(mpd, bin):
     t.quit()
 
 
-def test_a_broken_config_starts_with_the_defaults(mpd, bin):
+def test_a_bad_config_value_costs_only_that_setting(mpd, bin):
     mpd.reset(ALPHA)
-    t = Term(bin, mpd, config='marquee_speed = 0\n[theme]\nvisualizer_style = "blocks"\n')
+    # the bad style alone falls back; group_by_album = false still applies
+    t = Term(bin, mpd, config='marquee_speed = 0\nvisualizer_style = "pixels"\ngroup_by_album = false\n')
     assert t.find("Aone"), "it runs: " + t.text()
-    assert t.find("config.toml ignored") and t.find("move it above [theme]"), t.text()
+    assert t.find("visualizer_style: unknown variant `pixels`"), t.text()
+    assert not t.find("Alpha (2001)"), "the rest of the file applies (no album groups): " + t.text()
     t.pump(5)
-    assert t.find("config.toml ignored"), "it stays until a key"
+    assert t.find("visualizer_style:"), "it stays until a key"
     t.send("j")
-    assert not t.find("config.toml ignored"), "a key dismisses it"
+    assert not t.find("visualizer_style:"), "a key dismisses it"
+    assert t.quit() == 0
+
+
+def test_a_config_that_isnt_toml_starts_with_the_defaults(mpd, bin):
+    mpd.reset(ALPHA)
+    t = Term(bin, mpd, config="marquee_speed = 0\ngroup_by_album = \n")
+    assert t.find("Aone"), "it runs: " + t.text()
+    assert t.find("config.toml ignored"), t.text()
     assert t.quit() == 0
 
 

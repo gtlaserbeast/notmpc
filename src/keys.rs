@@ -6,7 +6,7 @@
 use std::collections::HashMap;
 use std::str::FromStr;
 
-use anyhow::{Result, anyhow, bail};
+use anyhow::{Result, bail};
 
 use crate::nc::{Input, key};
 
@@ -341,19 +341,28 @@ impl Keymap {
     }
 
     /// Overlays `section`'s bindings from the config file.
-    pub fn merge(&mut self, section: &str, entries: &HashMap<String, String>) -> Result<()> {
+    /// Adds `entries` to `section`, skipping any that don't parse; returns
+    /// those, each as (where, what was wrong).
+    pub fn merge(&mut self, section: &str, entries: &HashMap<String, String>) -> Vec<(String, String)> {
         let map = match section {
             "global" => &mut self.global,
             "navigation" => &mut self.navigation,
             "queue" => &mut self.queue,
-            _ => bail!("unknown key section [keys.{section}]"),
+            _ => return vec![(format!("[keys.{section}]"), "unknown key section (global, navigation, queue)".into())],
         };
-        for (k, a) in entries {
-            let seq = parse_seq(k).map_err(|e| anyhow!("[keys.{section}] {k:?}: {e}"))?;
-            let action = a.parse().map_err(|e| anyhow!("[keys.{section}] {k:?}: {e}"))?;
-            map.insert(seq, action);
+        let mut problems = Vec::new();
+        let mut keys: Vec<&String> = entries.keys().collect();
+        keys.sort();
+        for k in keys {
+            let parsed = parse_seq(k).and_then(|seq| Ok((seq, entries[k].parse()?)));
+            match parsed {
+                Ok((seq, action)) => {
+                    map.insert(seq, action);
+                }
+                Err(e) => problems.push((format!("[keys.{section}] {k:?}"), e.to_string())),
+            }
         }
-        Ok(())
+        problems
     }
 }
 
@@ -465,7 +474,7 @@ impl Keymap {
         let mut km = Self::default();
         for (section, binds) in DEFAULTS {
             let entries = binds.iter().map(|(k, a)| (k.to_string(), a.to_string())).collect();
-            km.merge(section, &entries).expect("built-in keymap is valid");
+            assert!(km.merge(section, &entries).is_empty(), "built-in keymap is valid");
         }
         km
     }

@@ -7,7 +7,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, anyhow, bail};
 use serde::Deserialize;
 
 use crate::keys::Keymap;
@@ -261,6 +261,23 @@ impl VisualizerMirror {
     }
 }
 
+/// What was wrong in a config: (the entry, why).
+type Problem = (String, String);
+
+/// The footer message for a config's `problems`, if it has any. The
+/// footer cuts what doesn't fit, so the entries' names come first.
+fn problems_note(problems: &[Problem]) -> Option<String> {
+    match problems {
+        [] => None,
+        [(what, why)] => Some(format!("config.toml: {what}: {why} (using the default)")),
+        many => {
+            let names: Vec<&str> = many.iter().map(|(what, _)| what.as_str()).collect();
+            let whys: Vec<String> = many.iter().map(|(what, why)| format!("{what}: {why}")).collect();
+            Some(format!("config.toml: defaults used for {}. {}", names.join(", "), whys.join("; ")))
+        }
+    }
+}
+
 /// Whether `name` is a top-level config key: parsing it alone fails on its
 /// value, not as an unknown field.
 fn is_setting(name: &str) -> bool {
@@ -303,11 +320,7 @@ pub struct Config {
     pub marquee_speed: u32,
     /// How many times it scrolls round before stopping at `…`.
     pub marquee_count: MarqueeCount,
-    /// `[keys.*]` and `[theme]` as written; merged into `keys` and `theme`.
-    #[serde(rename = "keys")]
-    key_overrides: HashMap<String, HashMap<String, String>>,
-    #[serde(rename = "theme")]
-    theme_overrides: HashMap<String, ThemeEntry>,
+    /// The defaults with `[keys.*]` merged in (see `parse`).
     #[serde(skip)]
     pub keys: Keymap,
     #[serde(skip)]
@@ -337,8 +350,6 @@ impl Default for Config {
             visualizer_delay_ms: 150,
             marquee_speed: 8,
             marquee_count: MarqueeCount(Some(1)),
-            key_overrides: HashMap::new(),
-            theme_overrides: HashMap::new(),
             keys: Keymap::defaults(),
             theme: Theme::default(),
         }
@@ -374,11 +385,18 @@ impl Config {
     }
 
     /// Loads the config file if there is one, then the saved state.
-    /// The config, or the defaults and why the file couldn't be used.
-    pub fn load() -> (Self, Option<anyhow::Error>) {
-        let (mut cfg, err) = match Self::load_config() {
-            Ok(cfg) => (cfg, None),
-            Err(e) => (Self::default(), Some(e)),
+    /// Also returns what to tell the user about the file, if anything:
+    /// settings it got wrong (each left at its default), or why none of it
+    /// could be used.
+    pub fn load() -> (Self, Option<String>) {
+        let (mut cfg, note) = match Self::load_config() {
+            Ok((cfg, problems)) => (cfg, problems_note(&problems)),
+            Err(e) => {
+                // the reason first: the file's path (the outermost context) is long
+                let why: Vec<String> = e.chain().skip(1).map(ToString::to_string).collect();
+                let why = if why.is_empty() { e.to_string() } else { why.join(": ") };
+                (Self::default(), Some(format!("config.toml ignored: {why}")))
+            }
         };
         let state = State::load();
         if let Some(ms) = state.visualizer_delay_ms {
@@ -387,36 +405,92 @@ impl Config {
         if let Some(on) = state.visualizer {
             cfg.visualizer = on;
         }
-        (cfg, err)
+        (cfg, note)
     }
 
-    fn load_config() -> Result<Self> {
+    fn load_config() -> Result<(Self, Vec<Problem>)> {
         let Some(path) = Self::path().filter(|p| p.exists()) else {
-            return Ok(Self::default());
+            return Ok((Self::default(), Vec::new()));
         };
         let text = fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
         Self::parse(&text).with_context(|| path.display().to_string())
     }
 
-    fn parse(text: &str) -> Result<Self> {
-        let mut cfg: Self = toml::from_str(text)?;
+    /// The config in `text`, and what was wrong in it. Only a file that
+    /// isn't TOML at all fails; otherwise each setting, key binding and
+    /// theme entry is checked on its own, and a bad one is left at its
+    /// default (and listed) without costing the rest.
+    fn parse(text: &str) -> Result<(Self, Vec<Problem>)> {
+        // toml's own text is several lines with a caret under the spot,
+        // too much for the footer: the line and the reason will do
+        let mut table: toml::Table = text.parse().map_err(|e: toml::de::Error| {
+            let line = e.span().map_or(1, |s| text.get(..s.start).unwrap_or(text).matches('\n').count() + 1);
+            anyhow!("line {line}: {}", e.message().trim_end())
+        })?;
+        let mut problems = Vec::new();
+        let keys = table.remove("keys");
+        let theme = table.remove("theme");
+        let names: Vec<String> = table.keys().cloned().collect();
+        for name in names {
+            let alone = toml::Table::from_iter([(name.clone(), table[&name].clone())]);
+            if let Err(e) = alone.try_into::<Self>() {
+                let why = if e.message().starts_with("unknown field") { "not a setting" } else { e.message() };
+                problems.push((name.clone(), why.to_owned()));
+                table.remove(&name);
+            }
+        }
+        let mut cfg: Self = table.try_into()?;
         cfg.art_width = cfg.art_width.min(90);
         cfg.status_update_interval_ms = cfg.status_update_interval_ms.max(100);
         cfg.visualizer_rows = cfg.visualizer_rows.clamp(2, 12);
         cfg.visualizer_fps = cfg.visualizer_fps.clamp(5, 60);
         cfg.marquee_speed = cfg.marquee_speed.min(60);
-        for (section, entries) in std::mem::take(&mut cfg.key_overrides) {
-            cfg.keys.merge(&section, &entries)?;
-        }
-        for (name, entry) in std::mem::take(&mut cfg.theme_overrides) {
-            // TOML puts every key after a `[theme]` header in that table, so
-            // a setting added at the end of the file lands there.
-            if is_setting(&name) {
-                bail!("{name} is a setting, not a theme entry: move it above [theme]");
+
+        match keys {
+            None => {}
+            Some(toml::Value::Table(sections)) => {
+                for (section, entries) in sections {
+                    let toml::Value::Table(entries) = entries else {
+                        problems.push((format!("[keys.{section}]"), "expected a table of keys".into()));
+                        continue;
+                    };
+                    let mut good = HashMap::new();
+                    for (k, a) in entries {
+                        match a {
+                            toml::Value::String(a) => {
+                                good.insert(k, a);
+                            }
+                            _ => problems.push((format!("[keys.{section}] {k:?}"), "expected an action name".into())),
+                        }
+                    }
+                    problems.extend(cfg.keys.merge(&section, &good));
+                }
             }
-            cfg.theme.set(&name, entry).with_context(|| format!("[theme] {name}"))?;
+            Some(_) => problems.push(("keys".into(), "expected [keys.<section>] tables".into())),
         }
-        Ok(cfg)
+        match theme {
+            None => {}
+            Some(toml::Value::Table(entries)) => {
+                for (name, value) in entries {
+                    // TOML puts every key after a `[theme]` header in that
+                    // table, so a setting added at the end of the file lands
+                    // there.
+                    if is_setting(&name) {
+                        problems.push((name, "a setting, not a theme entry: move it above [theme]".into()));
+                        continue;
+                    }
+                    let set = value
+                        .try_into::<ThemeEntry>()
+                        .map_err(|_| anyhow!("expected a colour, a style table or a list"))
+                        .and_then(|entry| cfg.theme.set(&name, entry));
+                    if let Err(e) = set {
+                        problems.push((format!("[theme] {name}"), format!("{e:#}")));
+                    }
+                }
+            }
+            Some(_) => problems.push(("theme".into(), "expected a [theme] table".into())),
+        }
+        Ok((cfg, problems))
     }
 
     pub fn status_interval(&self) -> Duration {
@@ -554,6 +628,21 @@ pub fn parse_color(s: &str) -> Result<Color> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::keys::parse_seq;
+
+    /// The config in `text`, or what was wrong with it.
+    fn strict(text: &str) -> std::result::Result<Config, Vec<Problem>> {
+        match Config::parse(text) {
+            Ok((cfg, problems)) if problems.is_empty() => Ok(cfg),
+            Ok((_, problems)) => Err(problems),
+            Err(e) => Err(vec![("file".into(), e.to_string())]),
+        }
+    }
+
+    /// `problems` as the footer's "what: why" parts, one per line.
+    fn listed(problems: &[Problem]) -> String {
+        problems.iter().map(|(what, why)| format!("{what}: {why}\n")).collect()
+    }
 
     #[test]
     fn parses_colors() {
@@ -566,8 +655,7 @@ mod tests {
 
     #[test]
     fn visualizer_colours_take_palettes_hex_or_terminal_colours() {
-        let viz =
-            |v: &str| Config::parse(&format!("[theme]\nvisualizer_colors = {v}")).map(|c| c.theme.visualizer_colors);
+        let viz = |v: &str| strict(&format!("[theme]\nvisualizer_colors = {v}")).map(|c| c.theme.visualizer_colors);
         assert_eq!(viz(r#""mono""#).unwrap(), vec![Color::Rgb(0x8a8a8a)]);
         assert_eq!(
             viz(r##"["2", "light_blue", "#112233"]"##).unwrap(),
@@ -580,7 +668,7 @@ mod tests {
 
     #[test]
     fn marquee_count_takes_numbers_and_words() {
-        let count = |v: &str| Config::parse(&format!("marquee_count = {v}\n")).map(|c| c.marquee_count.0);
+        let count = |v: &str| strict(&format!("marquee_count = {v}\n")).map(|c| c.marquee_count.0);
         assert_eq!(count("3").unwrap(), Some(3));
         assert_eq!(count("\"off\"").unwrap(), Some(0));
         assert_eq!(count("\"once\"").unwrap(), Some(1));
@@ -591,16 +679,74 @@ mod tests {
 
     #[test]
     fn a_setting_under_theme_says_where_it_goes() {
-        let err = Config::parse("[theme]\nvisualizer_style = \"blocks\"\n").unwrap_err();
-        assert!(err.to_string().contains("move it above [theme]"), "{err:#}");
-        let err = Config::parse("[theme]\nno_such_thing = \"1\"\n").unwrap_err();
-        assert!(format!("{err:#}").contains("unknown theme entry"), "{err:#}");
+        let (_, problems) = Config::parse("[theme]\nvisualizer_style = \"blocks\"\n").unwrap();
+        assert!(listed(&problems).contains("visualizer_style: a setting, not a theme entry: move it above [theme]"));
+        let (_, problems) = Config::parse("[theme]\nno_such_thing = \"1\"\n").unwrap();
+        assert!(listed(&problems).contains("[theme] no_such_thing: unknown theme entry"), "{problems:?}");
         assert!(!is_setting("cursor") && is_setting("marquee_speed"));
     }
 
     #[test]
+    fn a_bad_value_costs_only_its_own_setting() {
+        let (cfg, problems) = Config::parse(
+            r##"
+            visualizer_style = "pixels"
+            volume_step = 2
+            no_such_key = 1
+            art_width = "wide"
+            [keys.global]
+            "<C-p>" = "NoSuchAction"
+            "<C-x>" = "TogglePause"
+            [keys.nowhere]
+            "a" = "Quit"
+            [theme]
+            cursor = { fg = "black", bg = "#112233" }
+            volume = "not-a-colour"
+            visualizer_colors = ["1", "4"]
+            title = 7
+            "##,
+        )
+        .unwrap();
+        assert_eq!(cfg.volume_step, 2, "good settings still apply");
+        assert_eq!(cfg.visualizer_style, VisualizerStyle::Braille, "the bad one is at its default");
+        assert_eq!(cfg.art_width, 60);
+        assert_eq!(cfg.theme.cursor.bg, Color::Rgb(0x112233));
+        assert_eq!(cfg.theme.visualizer_colors.len(), 2);
+        assert_eq!(format!("{:?}", cfg.theme.volume), format!("{:?}", Theme::default().volume));
+        let ctrl_x = parse_seq("<C-x>").unwrap();
+        assert!(cfg.keys.global.contains_key(&ctrl_x), "good keys still apply");
+        let all = listed(&problems);
+        for what in [
+            "visualizer_style: unknown variant `pixels`",
+            "no_such_key: not a setting",
+            "art_width:",
+            "[keys.global] \"<C-p>\"",
+            "[keys.nowhere]",
+            "[theme] volume",
+            "[theme] title: expected a colour",
+        ] {
+            assert!(all.contains(what), "{what:?} in {all}");
+        }
+        assert_eq!(problems.len(), 7, "{all}");
+    }
+
+    #[test]
+    fn only_a_file_that_isnt_toml_is_ignored_whole() {
+        let err = Config::parse("volume_step = 2\nart_width = ").unwrap_err().to_string();
+        assert!(err.starts_with("line 2: ") && !err.contains('\n'), "{err}");
+        assert_eq!(problems_note(&[]), None);
+        let p = |what: &str, why: &str| (what.to_owned(), why.to_owned());
+        assert_eq!(problems_note(&[p("a", "b")]).unwrap(), "config.toml: a: b (using the default)");
+        assert_eq!(
+            problems_note(&[p("a", "bad"), p("[theme] c", "worse")]).unwrap(),
+            "config.toml: defaults used for a, [theme] c. a: bad; [theme] c: worse"
+        );
+    }
+
+    #[test]
     fn example_config_parses() {
-        Config::parse(include_str!("../config.example.toml")).unwrap();
+        let (_, problems) = Config::parse(include_str!("../config.example.toml")).unwrap();
+        assert!(problems.is_empty(), "{problems:?}");
     }
 
     #[test]
@@ -618,7 +764,8 @@ mod tests {
             mode_symbols = ["R", "Z", "C", "S", "F"]
             "##,
         )
-        .unwrap();
+        .unwrap()
+        .0;
         assert_eq!(cfg.volume_step, 2);
         assert_eq!(cfg.seek_step, 5, "unset keys keep their defaults");
         assert_eq!(cfg.visualizer_rows, 12, "clamped");
@@ -626,6 +773,6 @@ mod tests {
         assert_eq!(cfg.theme.progress_symbols[0], "[");
         assert_eq!(cfg.theme.mode_symbols[4], "F");
         assert!(cfg.keys.global.len() > 20, "skipped fields come from Config::default");
-        assert!(Config::parse("no_such_key = 1").is_err());
+        assert_eq!(listed(&Config::parse("no_such_key = 1").unwrap().1), "no_such_key: not a setting\n");
     }
 }
