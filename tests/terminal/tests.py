@@ -366,3 +366,28 @@ def test_visualizer_tab_frames_go_through_shared_memory_in_kitty(mpd, bin):
     t.quit()
     left = list(Path("/dev/shm").glob(f"notmpc-{t.pid}-*"))
     assert not left, left
+
+
+def test_a_stalled_mpd_does_not_leave_replies_one_behind(mpd, bin):
+    # MPD waiting on a disk spinning up answers nobody, not even a new
+    # connection's greeting. Once it wakes, the reply notmpc gave up on
+    # must not be read as the next command's (the preview of the folder
+    # above the cursor, from then on).
+    import signal
+
+    mpd.reset()
+    t = Term(bin, mpd)
+    t.send("2", settle=1.5)
+    assert t.find("Loose Album (1999)"), t.text()
+    os.kill(mpd.proc.pid, signal.SIGSTOP)
+    try:
+        t.send("j", settle=0.2)  # Artist A: its preview waits on the stuck MPD
+        t.pump(23)  # the reply's 10 s timeout, then the reconnect's
+    finally:
+        os.kill(mpd.proc.pid, signal.SIGCONT)
+    t.pump(1.5)
+    t.send("j", settle=1.5)  # Artist B
+    assert t.find("Beta (2005)") and not t.find("Alpha (2001)"), t.text()
+    t.send("k", settle=1.5)  # Artist A
+    assert t.find("Alpha (2001)") and not t.find("Beta (2005)"), t.text()
+    t.quit()

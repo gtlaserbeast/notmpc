@@ -66,6 +66,10 @@ pub struct Conn {
     timeout: Option<Duration>,
     reader: BufReader<Box<dyn Read + Send>>,
     writer: Box<dyn Write + Send>,
+    /// A reply may be half read or still on its way (a timeout, a garbled
+    /// line): the next request starts on a new connection, or each reply
+    /// read from here on would be the one before's.
+    broken: bool,
 }
 
 impl Conn {
@@ -104,7 +108,7 @@ impl Conn {
         writer: Box<dyn Write + Send>,
     ) -> Result<Self> {
         let password = target.password.clone();
-        let mut conn = Self { target, timeout, reader, writer };
+        let mut conn = Self { target, timeout, reader, writer, broken: false };
 
         let greeting = conn.read_line()?;
         if !greeting.starts_with("OK MPD ") {
@@ -113,9 +117,12 @@ impl Conn {
         if let Some(pw) = password {
             conn.exchange(&format!("password {}", quote(&pw)))?;
         }
-        // Older servers reject this; art then just arrives in smaller chunks.
-        let _ = conn.exchange(&format!("binarylimit {BINARY_LIMIT}"));
-        Ok(conn)
+        // Older servers refuse this; art then just arrives in smaller chunks.
+        // Anything else (a timeout) leaves its reply unread: give up.
+        match conn.exchange(&format!("binarylimit {BINARY_LIMIT}")) {
+            Err(e) if !e.is::<Ack>() => Err(e),
+            _ => Ok(conn),
+        }
     }
 
     pub fn command(&mut self, cmd: &str) -> Result<Pairs> {
@@ -165,21 +172,38 @@ impl Conn {
     }
 
     /// Sends `cmd`. Any failure but MPD's own refusal leaves the
-    /// connection unusable (a reply may be half read), so it reconnects.
-    /// Only when MPD had dropped the connection is `cmd` retried: then it
-    /// never ran. After a timeout or a garbled reply it may have, so the
-    /// error is returned instead.
+    /// connection unusable (a reply may be half read, or arrive late), so
+    /// the next request reconnects first, however many tries that takes:
+    /// a stalled MPD (waiting on a disk spinning up) may not greet a new
+    /// connection in time either. Only when MPD had dropped the
+    /// connection is `cmd` retried at once: then it never ran. After a
+    /// timeout or a garbled reply it may have, so the error is returned.
     fn request(&mut self, cmd: &str) -> Result<(Pairs, Option<Vec<u8>>)> {
+        if self.broken {
+            *self = Self::open(&self.target, self.timeout)?;
+        }
         match self.exchange(cmd) {
-            Err(e) if !e.is::<Ack>() => {
+            Err(e) if dropped(&e) => {
                 *self = Self::open(&self.target, self.timeout)?;
-                if dropped(&e) { self.exchange(cmd) } else { Err(e) }
+                self.exchange(cmd)
             }
             r => r,
         }
     }
 
+    /// One command and its reply; a failure other than a refusal marks
+    /// the connection broken.
     fn exchange(&mut self, cmd: &str) -> Result<(Pairs, Option<Vec<u8>>)> {
+        let r = self.exchange_once(cmd);
+        if let Err(e) = &r
+            && !e.is::<Ack>()
+        {
+            self.broken = true;
+        }
+        r
+    }
+
+    fn exchange_once(&mut self, cmd: &str) -> Result<(Pairs, Option<Vec<u8>>)> {
         writeln!(self.writer, "{cmd}")?;
         self.writer.flush()?;
 
@@ -381,6 +405,7 @@ fn secs(v: &str) -> Duration {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::VecDeque;
     use std::io::Cursor;
     use std::sync::{Arc, Mutex};
 
@@ -410,6 +435,61 @@ mod tests {
         let target = Target { addr: Addr::Unix("/nonexistent".into()), password: None };
         let c = Conn::start(target, None, BufReader::new(reader), Box::new(sent.clone())).unwrap();
         (c, sent)
+    }
+
+    /// A fake server's stream: `Ok` chunks to read, `Err` a read timing
+    /// out (the server stalled) before the next chunk arrives.
+    struct Stalls(VecDeque<std::result::Result<Vec<u8>, std::io::ErrorKind>>);
+
+    impl Read for Stalls {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            match self.0.pop_front() {
+                None => Ok(0),
+                Some(Err(kind)) => Err(kind.into()),
+                Some(Ok(mut chunk)) => {
+                    let n = chunk.len().min(buf.len());
+                    if n < chunk.len() {
+                        self.0.push_front(Ok(chunk.split_off(n)));
+                    }
+                    buf[..n].copy_from_slice(&chunk);
+                    Ok(n)
+                }
+            }
+        }
+    }
+
+    fn stalling(script: Vec<std::result::Result<&[u8], std::io::ErrorKind>>) -> Result<Conn> {
+        let chunks = script.into_iter().map(|c| c.map(<[u8]>::to_vec)).collect();
+        let reader: Box<dyn Read + Send> = Box::new(Stalls(chunks));
+        // nothing listens there: reconnecting fails, as it does while MPD
+        // is too stuck to greet a new client
+        let target = Target { addr: Addr::Unix("/nonexistent".into()), password: None };
+        Conn::start(target, None, BufReader::new(reader), Box::new(Sent::default()))
+    }
+
+    #[test]
+    fn a_late_reply_is_never_taken_for_the_next_one() {
+        use std::io::ErrorKind::TimedOut;
+        let mut c = stalling(vec![
+            Ok(b"OK MPD 0.24.0\nOK\n"),
+            Err(TimedOut),
+            // the stalled lsinfo's reply, arriving after we gave up on it
+            Ok(b"directory: a/one\nOK\n"),
+            Ok(b"directory: b/one\nOK\n"),
+        ])
+        .unwrap();
+        assert!(c.command("lsinfo a").is_err());
+        // the reconnect fails (MPD still stuck): an error, not a's reply
+        assert!(c.command("lsinfo b").is_err());
+        assert!(c.command("lsinfo b").is_err(), "and it keeps trying to reconnect");
+    }
+
+    #[test]
+    fn a_stall_while_logging_in_fails_the_connection() {
+        let c = stalling(vec![Ok(b"OK MPD 0.24.0\n"), Err(std::io::ErrorKind::TimedOut), Ok(b"OK\n")]);
+        assert!(c.is_err(), "binarylimit's reply would be read as the first command's");
+        let refused = stalling(vec![Ok(b"OK MPD 0.20.0\nACK [5@0] {binarylimit} unknown command\n")]);
+        assert!(refused.is_ok(), "an old server just refuses it");
     }
 
     #[test]
